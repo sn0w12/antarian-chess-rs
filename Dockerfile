@@ -18,7 +18,7 @@ COPY nginx.conf /etc/nginx/nginx.conf
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
 
-ENV PORT=20683    # internal port for the Rust server
-EXPOSE 20682       # external port served by nginx
+ENV PORT=20683
+EXPOSE 20682
 
 CMD ["/start.sh"]
