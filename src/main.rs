@@ -25,7 +25,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::components::chess_board::{ChessBoard, GameMode};
 
-const WS_URL: &str = "ws://chess.arathia.net";
+const WS_URL: &str = "wss://chess.arathia.net/";
 
 // ---------------------------------------------------------------------------
 // Settings persistence
