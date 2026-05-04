@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "antarian-chess-rs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chess_bot",
  "chess_engine",
