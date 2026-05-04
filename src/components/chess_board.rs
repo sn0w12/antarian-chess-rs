@@ -1,5 +1,6 @@
 use chess_bot::find_best_move;
 use chess_engine::*;
+use chess_server::protocol::ClientMessage;
 use crate::audio;
 use gpui::{
     AnyElement, AsyncApp, Context, Hsla, Image, ImageFormat, IntoElement, ObjectFit, ParentElement,
@@ -326,11 +327,14 @@ impl ChessBoard {
         if self.game_mode == GameMode::Online {
             if let Some(ref tx) = self.online_tx {
                 let gid = self.game_id.clone().unwrap_or_default();
-                let msg = serde_json::json!({
-                    "type": "MakeMove",
-                    "data": { "game_id": gid, "from": mv.from, "to": mv.to }
-                });
-                let _ = tx.send(msg.to_string());
+                let msg = ClientMessage::MakeMove {
+                    game_id: gid,
+                    from: mv.from,
+                    to: mv.to,
+                };
+                if let Ok(payload) = serde_json::to_string(&msg) {
+                    let _ = tx.send(payload);
+                }
             }
         }
 

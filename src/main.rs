@@ -5,7 +5,7 @@ mod components;
 mod theme;
 
 use chess_engine::Color;
-use chess_server::protocol::ServerMessage;
+use chess_server::protocol::{ClientMessage, ServerMessage};
 use futures_util::{SinkExt, StreamExt};
 use gpui::{
     App, AppContext, AsyncApp, Bounds, Context, Entity, FocusHandle, Focusable, InteractiveElement,
@@ -192,8 +192,8 @@ impl ChessApp {
 
             let (mut write, mut read) = ws.split();
 
-            let join = serde_json::json!({"type": "Join", "data": {"name": name}});
-            if write.send(Message::Text(join.to_string())).await.is_err() {
+            let join = serde_json::to_string(&ClientMessage::Join { name }).unwrap();
+            if write.send(Message::Text(join)).await.is_err() {
                 app.update(|app| {
                     if let Some(entity) = weak.upgrade() {
                         let _ = entity.update(app, |this, cx| {
@@ -258,8 +258,9 @@ impl ChessApp {
 
     fn cancel_matchmaking(&mut self, cx: &mut Context<Self>) {
         if let Some(tx) = &self.online_tx {
-            let msg = serde_json::json!({"type": "LeaveMatchmaking"});
-            let _ = tx.send(msg.to_string());
+            if let Ok(payload) = serde_json::to_string(&ClientMessage::LeaveMatchmaking) {
+                let _ = tx.send(payload);
+            }
         }
         self.online_tx = None;
         self.view = View::Menu;
@@ -269,9 +270,10 @@ impl ChessApp {
     fn handle_server_message(&mut self, msg: ServerMessage, cx: &mut Context<Self>) {
         match msg {
             ServerMessage::Joined { .. } => {
-                let mm = serde_json::json!({"type": "StartMatchmaking"});
                 if let Some(tx) = &self.online_tx {
-                    let _ = tx.send(mm.to_string());
+                    if let Ok(payload) = serde_json::to_string(&ClientMessage::StartMatchmaking) {
+                        let _ = tx.send(payload);
+                    }
                 }
             }
             ServerMessage::MatchmakingStarted => {}
