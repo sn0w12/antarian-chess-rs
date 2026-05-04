@@ -2,16 +2,23 @@ FROM rust:alpine AS builder
 RUN apk add --no-cache musl-dev
 WORKDIR /app
 
-# Copy only the server crate (standalone — no path dependencies)
 COPY crates/server/ .
-# Copy the lock file for reproducible dependency resolution
 COPY Cargo.lock /app/
 
 RUN cargo build --release --target x86_64-unknown-linux-musl
 RUN strip /app/target/x86_64-unknown-linux-musl/release/chess_server
 
-FROM scratch
-COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/chess_server /chess_server
-ENV PORT=20682
-EXPOSE 20682
-CMD ["/chess_server"]
+# ---- Final image ----
+FROM alpine:latest
+RUN apk add --no-cache nginx
+
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/chess_server /usr/local/bin/chess_server
+COPY nginx.conf /etc/nginx/nginx.conf
+
+COPY start.sh /start.sh
+RUN chmod +x /start.sh
+
+ENV PORT=20683    # internal port for the Rust server
+EXPOSE 20682       # external port served by nginx
+
+CMD ["/start.sh"]
