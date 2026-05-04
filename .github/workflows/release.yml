@@ -1,0 +1,91 @@
+name: Release
+
+on:
+    push:
+        tags:
+            - "v*"
+
+env:
+    ASSET_NAME: antarian-chess-rs
+
+jobs:
+    build:
+        name: Build for ${{ matrix.target }}
+        runs-on: ${{ matrix.os }}
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - os: ubuntu-latest
+                      target: x86_64-unknown-linux-gnu
+                      artifact_ext: ""
+                      platform: linux-x86_64
+                    - os: windows-latest
+                      target: x86_64-pc-windows-msvc
+                      artifact_ext: .exe
+                      platform: windows-x86_64
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@nightly
+              with:
+                  targets: ${{ matrix.target }}
+
+            - name: Cache cargo registry
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                  key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+                  restore-keys: |
+                      ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+            - name: Build release binary
+              run: cargo build -p ${{ env.ASSET_NAME }} --release --target ${{ matrix.target }}
+
+            - name: Prepare artifact name
+              id: prep
+              shell: bash
+              run: |
+                  VERSION=${GITHUB_REF_NAME#v}
+                  ARTIFACT_FILENAME="${{ env.ASSET_NAME }}-${VERSION}-${{ matrix.platform }}${{ matrix.artifact_ext }}"
+                  echo "artifact_filename=${ARTIFACT_FILENAME}" >> $GITHUB_OUTPUT
+
+            - name: Copy binary to artifact path
+              shell: bash
+              run: |
+                  cp "target/${{ matrix.target }}/release/${{ env.ASSET_NAME }}${{ matrix.artifact_ext }}" \
+                     "${{ steps.prep.outputs.artifact_filename }}"
+
+            - name: Upload artifact (to workflow run)
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ matrix.target }}-binary
+                  path: ${{ steps.prep.outputs.artifact_filename }}
+                  if-no-files-found: error
+
+    release:
+        name: Create GitHub Release
+        needs: build
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
+        steps:
+            - name: Download all artifacts
+              uses: actions/download-artifact@v4
+              with:
+                  path: artifacts
+
+            - name: Create Release
+              uses: softprops/action-gh-release@v2
+              with:
+                  tag_name: ${{ github.ref_name }}
+                  name: Release ${{ github.ref_name }}
+                  draft: false
+                  prerelease: false
+                  files: artifacts/**/*
+                  fail_on_unmatched_files: true
