@@ -6,7 +6,7 @@ use tokio::net::TcpListener;
 #[tokio::main]
 async fn main() {
     let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into());
-    let port = std::env::var("PORT").unwrap_or_else(|_| "20682".into());
+    let port = std::env::var("PORT").unwrap_or_else(|_| "20683".into());
     let addr: SocketAddr = format!("{host}:{port}")
         .parse()
         .expect("invalid HOST address");
