@@ -136,6 +136,8 @@ pub struct ChessBoard {
 
     pub bot_score: Option<i32>,
     pub bot_depth: Option<u32>,
+
+    last_move: Option<Move>,
 }
 
 impl ChessBoard {
@@ -160,6 +162,7 @@ impl ChessBoard {
             leave_requested: false,
             bot_score: None,
             bot_depth: None,
+            last_move: None,
         }
     }
 
@@ -182,6 +185,7 @@ impl ChessBoard {
         self.leave_requested = false;
         self.bot_score = None;
         self.bot_depth = None;
+        self.last_move = None;
         self.refresh_status();
     }
 
@@ -330,6 +334,7 @@ impl ChessBoard {
         {
             self.captured_opp.push(kind);
         }
+        self.last_move = Some(mv);
         self.game_state = self.game_state.make_move(&mv);
         self.selected_square = None;
         self.legal_targets.clear();
@@ -366,6 +371,7 @@ impl ChessBoard {
         {
             self.captured_us.push(kind);
         }
+        self.last_move = Some(mv);
         self.game_state = self.game_state.make_move(&mv);
         self.move_count += 1;
         self.refresh_status();
@@ -419,6 +425,7 @@ impl ChessBoard {
         {
             self.captured_us.push(kind);
         }
+        self.last_move = Some(mv);
         self.bot_score = Some(result.score);
         self.bot_depth = Some(result.depth);
         self.game_state = self.game_state.make_move(&mv);
@@ -463,6 +470,9 @@ fn dot() -> Hsla {
 fn leg() -> Hsla {
     hsla(0.30, 0.60, 0.55, 0.35)
 }
+fn lm() -> Hsla {
+    hsla(0.12, 0.50, 0.70, 1.0)
+}
 
 fn board_view(this: &ChessBoard, flip: bool, cx: &Context<ChessBoard>) -> AnyElement {
     let sqs = this.game_state.squares();
@@ -480,11 +490,16 @@ fn board_view(this: &ChessBoard, flip: bool, cx: &Context<ChessBoard>) -> AnyEle
                 .children(sqs.iter().enumerate().map(|(i, _)| {
                     let bi = if flip { 63 - i } else { i };
                     let piece = sqs[bi].map(|(c, p)| piece_image(p, c));
-                    let bg = if (i / 8 + i % 8) % 2 == 0 {
+                    let mut bg = if (i / 8 + i % 8) % 2 == 0 {
                         lsq()
                     } else {
                         dsq()
                     };
+                    if let Some(last) = this.last_move {
+                        if bi == last.from as usize || bi == last.to as usize {
+                            bg = lm();
+                        }
+                    }
                     let selected = this.selected_square == Some(bi);
                     let target = this.legal_targets.contains(&(bi as u8));
                     let weak = cx.weak_entity();
