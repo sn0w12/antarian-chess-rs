@@ -9,11 +9,17 @@ use chess_server::protocol::{ClientMessage, ServerMessage};
 use futures_util::{SinkExt, StreamExt};
 use gpui::{
     App, AppContext, AsyncApp, Bounds, Context, Entity, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, ParentElement, Pixels, Render, SharedString, Size, Styled, Subscription, TitlebarOptions,
-    Window, WindowBounds, WindowOptions, div, px,
+    IntoElement, ParentElement, Pixels, Render, SharedString, Size, Styled, Subscription,
+    TitlebarOptions, Window, WindowBounds, WindowOptions, div, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable, Root, Sizable, TitleBar, button::Button, h_flex, input::{Input, InputEvent, InputState}, label::Label, slider::{Slider, SliderEvent, SliderState}, v_flex
+    ActiveTheme, Disableable, Root, Sizable, TitleBar,
+    button::Button,
+    h_flex,
+    input::{Input, InputEvent, InputState},
+    label::Label,
+    slider::{Slider, SliderEvent, SliderState},
+    v_flex,
 };
 use gpui_component_assets::Assets;
 use serde::{Deserialize, Serialize};
@@ -126,19 +132,29 @@ impl ChessApp {
                 .default_value(settings.volume)
         });
 
-        let name_subscription = cx.subscribe(&name_input, move |this, _input, _: &InputEvent, cx| {
-            let name = this.name_input.read(cx).value().to_string();
-            let vol = this.volume_slider.read(cx).value().start();
-            save_settings(&Settings { player_name: name, volume: vol });
-        });
+        let name_subscription =
+            cx.subscribe(&name_input, move |this, _input, _: &InputEvent, cx| {
+                let name = this.name_input.read(cx).value().to_string();
+                let vol = this.volume_slider.read(cx).value().start();
+                save_settings(&Settings {
+                    player_name: name,
+                    volume: vol,
+                });
+            });
 
-        let volume_subscription = cx.subscribe(&volume_slider, move |this, _slider, event: &SliderEvent, cx| {
-            let SliderEvent::Change(value) = event;
-            let vol = value.start();
-            audio::set_volume(vol);
-            let name = this.name_input.read(cx).value().to_string();
-            save_settings(&Settings { player_name: name, volume: vol });
-        });
+        let volume_subscription = cx.subscribe(
+            &volume_slider,
+            move |this, _slider, event: &SliderEvent, cx| {
+                let SliderEvent::Change(value) = event;
+                let vol = value.start();
+                audio::set_volume(vol);
+                let name = this.name_input.read(cx).value().to_string();
+                save_settings(&Settings {
+                    player_name: name,
+                    volume: vol,
+                });
+            },
+        );
 
         Self {
             focus_handle,
@@ -174,9 +190,26 @@ impl ChessApp {
         cx.spawn(move |_: gpui::WeakEntity<Self>, async_app: &mut AsyncApp| {
             let app = async_app.clone();
             async move {
-            let (ws, _) = match connect_async(WS_URL).await {
-                Ok(ws) => ws,
-                Err(_) => {
+                let (ws, _) = match connect_async(WS_URL).await {
+                    Ok(ws) => ws,
+                    Err(_) => {
+                        app.update(|app| {
+                            if let Some(entity) = weak.upgrade() {
+                                let _ = entity.update(app, |this, cx| {
+                                    this.online_tx = None;
+                                    this.view = View::Menu;
+                                    cx.notify();
+                                });
+                            }
+                        });
+                        return;
+                    }
+                };
+
+                let (mut write, mut read) = ws.split();
+
+                let join = serde_json::to_string(&ClientMessage::Join { name }).unwrap();
+                if write.send(Message::Text(join)).await.is_err() {
                     app.update(|app| {
                         if let Some(entity) = weak.upgrade() {
                             let _ = entity.update(app, |this, cx| {
@@ -188,72 +221,55 @@ impl ChessApp {
                     });
                     return;
                 }
-            };
 
-            let (mut write, mut read) = ws.split();
+                let write_task = tokio::spawn(async move {
+                    while let Some(msg) = rx.recv().await {
+                        if write.send(Message::Text(msg)).await.is_err() {
+                            break;
+                        }
+                    }
+                });
 
-            let join = serde_json::to_string(&ClientMessage::Join { name }).unwrap();
-            if write.send(Message::Text(join)).await.is_err() {
+                while let Some(Ok(msg)) = read.next().await {
+                    let text = match msg {
+                        Message::Text(t) => t,
+                        Message::Close(_) => break,
+                        _ => continue,
+                    };
+
+                    let server_msg: ServerMessage = match serde_json::from_str(&text) {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
+
+                    if weak.upgrade().is_none() {
+                        break;
+                    }
+                    app.update(|app| {
+                        if let Some(entity) = weak.upgrade() {
+                            let _ = entity.update(app, |this, cx| {
+                                this.handle_server_message(server_msg, cx);
+                            });
+                        }
+                    });
+                }
+
                 app.update(|app| {
                     if let Some(entity) = weak.upgrade() {
                         let _ = entity.update(app, |this, cx| {
                             this.online_tx = None;
-                            this.view = View::Menu;
+                            if this.view == View::Matchmaking {
+                                this.view = View::Menu;
+                            }
                             cx.notify();
                         });
                     }
                 });
-                return;
+
+                write_task.await.unwrap_or(());
             }
-
-            let write_task = tokio::spawn(async move {
-                while let Some(msg) = rx.recv().await {
-                    if write.send(Message::Text(msg)).await.is_err() {
-                        break;
-                    }
-                }
-            });
-
-            while let Some(Ok(msg)) = read.next().await {
-                let text = match msg {
-                    Message::Text(t) => t,
-                    Message::Close(_) => break,
-                    _ => continue,
-                };
-
-                let server_msg: ServerMessage = match serde_json::from_str(&text) {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
-
-                if weak.upgrade().is_none() {
-                    break;
-                }
-                app.update(|app| {
-                    if let Some(entity) = weak.upgrade() {
-                        let _ = entity.update(app, |this, cx| {
-                            this.handle_server_message(server_msg, cx);
-                        });
-                    }
-                });
-            }
-
-            app.update(|app| {
-                if let Some(entity) = weak.upgrade() {
-                    let _ = entity.update(app, |this, cx| {
-                        this.online_tx = None;
-                        if this.view == View::Matchmaking {
-                            this.view = View::Menu;
-                        }
-                        cx.notify();
-                    });
-                }
-            });
-
-            write_task.await.unwrap_or(());
-        }
-    })
-    .detach();
+        })
+        .detach();
     }
 
     fn cancel_matchmaking(&mut self, cx: &mut Context<Self>) {
@@ -416,17 +432,14 @@ fn menu_view(
                     h_flex()
                         .gap_2()
                         .child({
-                            Button::new("bot-btn")
-                                .large()
-                                .label("vs Bot")
-                                .on_click({
-                                    let weak = weak.clone();
-                                    move |_, _window, cx| {
-                                        let _ = weak.update(cx, |this, cx| {
-                                            this.start_game(GameMode::Bot, Color::White, "Bot", cx);
-                                        });
-                                    }
-                                })
+                            Button::new("bot-btn").large().label("vs Bot").on_click({
+                                let weak = weak.clone();
+                                move |_, _window, cx| {
+                                    let _ = weak.update(cx, |this, cx| {
+                                        this.start_game(GameMode::Bot, Color::White, "Bot", cx);
+                                    });
+                                }
+                            })
                         })
                         .child({
                             let weak = weak.clone();
@@ -448,10 +461,7 @@ fn menu_view(
 
 // ===================== Matchmaking screen =====================
 
-fn matchmaking_view(
-    _app: &mut ChessApp,
-    cx: &mut Context<ChessApp>,
-) -> gpui::AnyElement {
+fn matchmaking_view(_app: &mut ChessApp, cx: &mut Context<ChessApp>) -> gpui::AnyElement {
     let weak = cx.weak_entity();
 
     v_flex()
@@ -463,15 +473,13 @@ fn matchmaking_view(
                 .items_center()
                 .gap_2()
                 .child(Label::new("Matchmaking...").text_color(cx.theme().foreground))
-                .child(
-                    Button::new("cancel-mm-btn")
-                        .label("Cancel")
-                        .on_click(move |_, _window, cx| {
-                            let _ = weak.update(cx, |this, cx| {
-                                this.cancel_matchmaking(cx);
-                            });
-                        }),
-                ),
+                .child(Button::new("cancel-mm-btn").label("Cancel").on_click(
+                    move |_, _window, cx| {
+                        let _ = weak.update(cx, |this, cx| {
+                            this.cancel_matchmaking(cx);
+                        });
+                    },
+                )),
         )
         .into_any_element()
 }
@@ -495,7 +503,8 @@ fn game_view(
     cx: &mut Context<ChessApp>,
 ) -> gpui::AnyElement {
     if app.board.read(cx).leave_requested {
-        app.board.update(cx, |board, _| board.leave_requested = false);
+        app.board
+            .update(cx, |board, _| board.leave_requested = false);
         app.back_to_menu(cx);
     }
     h_flex()

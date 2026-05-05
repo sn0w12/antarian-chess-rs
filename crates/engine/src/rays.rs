@@ -1,16 +1,20 @@
 use std::sync::OnceLock;
 
 const DIR_OFFSETS: [(i8, i8); 8] = [
-    (-1, -1), (-1, 0), (-1, 1),
-    ( 0, -1),           ( 0, 1),
-    ( 1, -1),  ( 1, 0),  ( 1, 1),
+    (-1, -1),
+    (-1, 0),
+    (-1, 1),
+    (0, -1),
+    (0, 1),
+    (1, -1),
+    (1, 0),
+    (1, 1),
 ];
 
 static RAYS: OnceLock<[[&[u8]; 8]; 64]> = OnceLock::new();
 
 fn build_rays() -> [[&'static [u8]; 8]; 64] {
-    let mut rays: [[Vec<u8>; 8]; 64] =
-        std::array::from_fn(|_| std::array::from_fn(|_| Vec::new()));
+    let mut rays: [[Vec<u8>; 8]; 64] = std::array::from_fn(|_| std::array::from_fn(|_| Vec::new()));
     for sq in 0..64usize {
         let f = (sq % 8) as i8;
         let r = (sq / 8) as i8;

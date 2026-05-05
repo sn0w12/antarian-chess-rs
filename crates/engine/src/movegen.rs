@@ -18,13 +18,13 @@ pub fn generate_sliding_moves(
     for &(df, dr) in directions {
         let dir = match (df, dr) {
             (-1, -1) => 0,
-            (-1,  0) => 1,
-            (-1,  1) => 2,
-            ( 0, -1) => 3,
-            ( 0,  1) => 4,
-            ( 1, -1) => 5,
-            ( 1,  0) => 6,
-            ( 1,  1) => 7,
+            (-1, 0) => 1,
+            (-1, 1) => 2,
+            (0, -1) => 3,
+            (0, 1) => 4,
+            (1, -1) => 5,
+            (1, 0) => 6,
+            (1, 1) => 7,
             _ => continue,
         };
         rays::generate_ray_moves(from, dir, sqs, color, captures_only, jump, &mut moves);

@@ -1,7 +1,7 @@
+use crate::audio;
 use chess_bot::find_best_move;
 use chess_engine::*;
 use chess_server::protocol::ClientMessage;
-use crate::audio;
 use gpui::{
     AnyElement, AsyncApp, Context, Hsla, Image, ImageFormat, IntoElement, ObjectFit, ParentElement,
     Render, Styled, StyledImage, WeakEntity, Window, div, hsla, img, px,
@@ -193,27 +193,25 @@ impl ChessBoard {
     pub fn start_timer(&mut self, cx: &mut Context<Self>) {
         let weak = cx.weak_entity();
         let bg = cx.background_executor().clone();
-        cx.spawn(
-            move |_: WeakEntity<ChessBoard>, async_app: &mut AsyncApp| {
-                let bg = bg.clone();
-                let app = async_app.clone();
-                async move {
-                    let tick = Duration::from_millis(100);
-                    loop {
-                        bg.timer(tick).await;
-                        let entity = match weak.upgrade() {
-                            Some(e) => e,
-                            None => break,
-                        };
-                        let _ = app.update(|app| {
-                            let _ = entity.update(app, |this, cx| {
-                                this.tick(cx);
-                            });
+        cx.spawn(move |_: WeakEntity<ChessBoard>, async_app: &mut AsyncApp| {
+            let bg = bg.clone();
+            let app = async_app.clone();
+            async move {
+                let tick = Duration::from_millis(100);
+                loop {
+                    bg.timer(tick).await;
+                    let entity = match weak.upgrade() {
+                        Some(e) => e,
+                        None => break,
+                    };
+                    let _ = app.update(|app| {
+                        let _ = entity.update(app, |this, cx| {
+                            this.tick(cx);
                         });
-                    }
+                    });
                 }
-            },
-        )
+            }
+        })
         .detach();
     }
 
@@ -329,9 +327,7 @@ impl ChessBoard {
 
     fn exec_move(&mut self, mv: Move, cx: &mut Context<Self>) {
         let was_capture = mv.capture;
-        if was_capture
-            && let Some((_, kind)) = self.game_state.get(mv.to as usize)
-        {
+        if was_capture && let Some((_, kind)) = self.game_state.get(mv.to as usize) {
             self.captured_opp.push(kind);
         }
         self.last_move = Some(mv);
@@ -359,16 +355,19 @@ impl ChessBoard {
         cx.notify();
 
         if self.game_mode == GameMode::Bot && !self.is_game_over() {
-            let time = think_time(&self.game_state, self.white_time, self.black_time, self.move_count);
+            let time = think_time(
+                &self.game_state,
+                self.white_time,
+                self.black_time,
+                self.move_count,
+            );
             Self::schedule_bot(&self.game_state, cx, time);
         }
     }
 
     pub fn apply_opponent_move(&mut self, mv: Move, cx: &mut Context<Self>) {
         let was_capture = mv.capture;
-        if was_capture
-            && let Some((_, kind)) = self.game_state.get(mv.to as usize)
-        {
+        if was_capture && let Some((_, kind)) = self.game_state.get(mv.to as usize) {
             self.captured_us.push(kind);
         }
         self.last_move = Some(mv);
@@ -400,29 +399,27 @@ impl ChessBoard {
             .background_executor()
             .spawn(async move { find_best_move(&board, think_duration) });
 
-    cx.spawn(|weak: WeakEntity<ChessBoard>, async_app: &mut AsyncApp| {
-        let app = async_app.clone();
-        async move {
-            if let Some(result) = task.await
-                && let Some(entity) = weak.upgrade()
-            {
-                let _ = app.update(|app| {
-                    let _ = entity.update(app, |this, cx| {
-                        this.exec_move_async(result, cx);
+        cx.spawn(|weak: WeakEntity<ChessBoard>, async_app: &mut AsyncApp| {
+            let app = async_app.clone();
+            async move {
+                if let Some(result) = task.await
+                    && let Some(entity) = weak.upgrade()
+                {
+                    let _ = app.update(|app| {
+                        let _ = entity.update(app, |this, cx| {
+                            this.exec_move_async(result, cx);
+                        });
                     });
-                });
+                }
             }
-        }
-    })
-    .detach();
+        })
+        .detach();
     }
 
     fn exec_move_async(&mut self, result: chess_bot::SearchResult, cx: &mut Context<Self>) {
         let mv = result.best_move;
         let was_capture = mv.capture;
-        if was_capture
-            && let Some((_, kind)) = self.game_state.get(mv.to as usize)
-        {
+        if was_capture && let Some((_, kind)) = self.game_state.get(mv.to as usize) {
             self.captured_us.push(kind);
         }
         self.last_move = Some(mv);
@@ -581,39 +578,29 @@ fn sidebar(this: &ChessBoard, cx: &Context<ChessBoard>) -> AnyElement {
                 .child(this.status_message.clone()),
         )
         .child(Separator::horizontal().w_full())
-        .children(
-            (this.game_mode == GameMode::Bot).then(|| {
-                let score_str = this.bot_score.map(fmt_score).unwrap_or_default();
-                let depth_str = this
-                    .bot_depth
-                    .map(|d| format!("{d}"))
-                    .unwrap_or_default();
-                v_flex()
-                    .w_full()
-                    .px_2()
-                    .gap_1()
-                    .child(detail(t, "Bot Eval", &score_str))
-                    .child(detail(t, "Search Depth", &depth_str))
-            }),
-        )
+        .children((this.game_mode == GameMode::Bot).then(|| {
+            let score_str = this.bot_score.map(fmt_score).unwrap_or_default();
+            let depth_str = this.bot_depth.map(|d| format!("{d}")).unwrap_or_default();
+            v_flex()
+                .w_full()
+                .px_2()
+                .gap_1()
+                .child(detail(t, "Bot Eval", &score_str))
+                .child(detail(t, "Search Depth", &depth_str))
+        }))
         .child(Separator::horizontal().w_full())
         .child(clock_row("White", &white_time, Color::White, this, t))
         .child(clock_row("Black", &black_time, Color::Black, this, t))
         .child(Separator::horizontal().w_full())
-        .child(
-            Button::new("leave-btn")
-                .w_full()
-                .label("Leave")
-                .on_click({
-                    let weak = cx.weak_entity();
-                    move |_, _window, cx| {
-                        let _ = weak.update(cx, |this, cx| {
-                            this.leave_requested = true;
-                            cx.notify();
-                        });
-                    }
-                }),
-        )
+        .child(Button::new("leave-btn").w_full().label("Leave").on_click({
+            let weak = cx.weak_entity();
+            move |_, _window, cx| {
+                let _ = weak.update(cx, |this, cx| {
+                    this.leave_requested = true;
+                    cx.notify();
+                });
+            }
+        }))
         .child(Separator::horizontal().w_full())
         .child(Label::new("Yours:").text_color(t.muted_foreground))
         .child(
@@ -644,14 +631,24 @@ fn sidebar(this: &ChessBoard, cx: &Context<ChessBoard>) -> AnyElement {
         .into_any_element()
 }
 
-fn clock_row(label: &str, time: &str, color: Color, board: &ChessBoard, t: &gpui_component::ThemeColor) -> AnyElement {
+fn clock_row(
+    label: &str,
+    time: &str,
+    color: Color,
+    board: &ChessBoard,
+    t: &gpui_component::ThemeColor,
+) -> AnyElement {
     let active = board.game_state.turn == color && !board.is_game_over();
     h_flex()
         .w_full()
         .px_2()
         .py_1()
         .rounded_md()
-        .bg(if active { t.primary.opacity(0.2) } else { t.muted.opacity(0.15) })
+        .bg(if active {
+            t.primary.opacity(0.2)
+        } else {
+            t.muted.opacity(0.15)
+        })
         .child(Label::new(label).w(px(56.)).text_color(t.muted_foreground))
         .child(Label::new(time).text_color(if active { t.primary } else { t.foreground }))
         .into_any_element()

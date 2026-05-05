@@ -232,9 +232,14 @@ impl Board {
     fn has_pin_threat(&self, king_sq: usize, color: Color) -> bool {
         let (kf, kr) = index_to_coord(king_sq);
         const DIRS: [(i8, i8); 8] = [
-            (-1, -1), (-1, 0), (-1, 1),
-            (0, -1),           (0, 1),
-            (1, -1),  (1, 0),  (1, 1),
+            (-1, -1),
+            (-1, 0),
+            (-1, 1),
+            (0, -1),
+            (0, 1),
+            (1, -1),
+            (1, 0),
+            (1, 1),
         ];
         for &(df, dr) in &DIRS {
             let mut cf = kf + df;
@@ -288,7 +293,9 @@ impl Board {
                 let (tf, tr) = index_to_coord(to);
                 (ff - tf).abs() <= 1 && (fr - tr).abs() <= 1
             }
-            PieceKind::Empress => self.sliding_attack(from, to, |df, dr| df == 0 || dr == 0 || df.abs() == dr.abs()),
+            PieceKind::Empress => self.sliding_attack(from, to, |df, dr| {
+                df == 0 || dr == 0 || df.abs() == dr.abs()
+            }),
             PieceKind::Priest => {
                 if self.sliding_attack(from, to, |df, dr| df.abs() == dr.abs()) {
                     return true;
@@ -362,12 +369,7 @@ impl Board {
         }
     }
 
-    fn sliding_attack(
-        &self,
-        from: usize,
-        to: usize,
-        direction_match: fn(i8, i8) -> bool,
-    ) -> bool {
+    fn sliding_attack(&self, from: usize, to: usize, direction_match: fn(i8, i8) -> bool) -> bool {
         let (ff, fr) = index_to_coord(from);
         let (tf, tr) = index_to_coord(to);
         let df = tf - ff;
