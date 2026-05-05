@@ -203,20 +203,21 @@ impl Board {
 
     // ---- Legal‑move filtering (king safety) ----
 
+    fn find_king(&self, color: Color) -> Option<usize> {
+        (0..64).find(|&sq| self.squares[sq] == Some((color, PieceKind::Emperor)))
+    }
+
     /// Returns `true` if `color`'s emperor is attacked by any opponent piece.
     pub fn is_in_check(&self, color: Color) -> bool {
-        let emperor_sq =
-            match (0..64).find(|&sq| self.squares[sq] == Some((color, PieceKind::Emperor))) {
-                Some(sq) => sq,
-                None => return false,
-            };
+        let king_sq = match self.find_king(color) {
+            Some(sq) => sq,
+            None => return false,
+        };
         let opp = color.opposite();
         for sq in 0..64 {
-            if self.squares[sq].is_some_and(|(pc, _)| pc == opp)
-                && self
-                    .generate_moves_for(sq, true)
-                    .iter()
-                    .any(|mv| mv.to == emperor_sq as u8)
+            if let Some((pc, kind)) = self.squares[sq]
+                && pc == opp
+                && self.attacks(sq, kind, pc, king_sq)
             {
                 return true;
             }
@@ -224,21 +225,245 @@ impl Board {
         false
     }
 
+    /// Returns `true` if an enemy slider has line-of-sight to the king through
+    /// a friendly piece — i.e. a pin exists. When there are no pin threats,
+    /// `generate_legal_moves` can skip the expensive `make_move`+`is_in_check`
+    /// filter for most moves.
+    fn has_pin_threat(&self, king_sq: usize, color: Color) -> bool {
+        let (kf, kr) = index_to_coord(king_sq);
+        const DIRS: [(i8, i8); 8] = [
+            (-1, -1), (-1, 0), (-1, 1),
+            (0, -1),           (0, 1),
+            (1, -1),  (1, 0),  (1, 1),
+        ];
+        for &(df, dr) in &DIRS {
+            let mut cf = kf + df;
+            let mut cr = kr + dr;
+            let mut found_friendly = false;
+            while let Some(idx) = coord_to_index(cf, cr) {
+                match self.squares[idx] {
+                    None => {
+                        cf += df;
+                        cr += dr;
+                        continue;
+                    }
+                    Some((pc, kind)) => {
+                        if pc == color {
+                            if found_friendly {
+                                break;
+                            }
+                            found_friendly = true;
+                        } else {
+                            if found_friendly {
+                                // king → friendly → enemy: could be a pin
+                                let slides = match kind {
+                                    PieceKind::Empress => true,
+                                    PieceKind::Priest => df.abs() == dr.abs(),
+                                    PieceKind::Dragon => df == 0 || dr == 0,
+                                    _ => false,
+                                };
+                                if slides {
+                                    return true;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+                cf += df;
+                cr += dr;
+            }
+        }
+        false
+    }
+
+    /// Fast targeted attack check — does a piece of `kind` at `from` attack `to`?
+    fn attacks(&self, from: usize, kind: PieceKind, color: Color, to: usize) -> bool {
+        if from == to {
+            return false;
+        }
+        match kind {
+            PieceKind::Emperor => {
+                let (ff, fr) = index_to_coord(from);
+                let (tf, tr) = index_to_coord(to);
+                (ff - tf).abs() <= 1 && (fr - tr).abs() <= 1
+            }
+            PieceKind::Empress => self.sliding_attack(from, to, |df, dr| df == 0 || dr == 0 || df.abs() == dr.abs()),
+            PieceKind::Priest => {
+                if self.sliding_attack(from, to, |df, dr| df.abs() == dr.abs()) {
+                    return true;
+                }
+                let (ff, fr) = index_to_coord(from);
+                let (tf, tr) = index_to_coord(to);
+                let df = (ff - tf).abs();
+                let dr = (fr - tr).abs();
+                (df == 1 && dr == 2) || (df == 2 && dr == 1)
+            }
+            PieceKind::Paladin => {
+                let (ff, fr) = index_to_coord(from);
+                let (tf, tr) = index_to_coord(to);
+                if (ff - tf).abs() <= 1 && (fr - tr).abs() <= 1 {
+                    return true;
+                }
+                let df = tf - ff;
+                let dr = tr - fr;
+                if (df.abs() == 2 && dr == 0) || (df == 0 && dr.abs() == 2) {
+                    let mf = ff + df.signum();
+                    let mr = fr + dr.signum();
+                    if let Some(idx) = coord_to_index(mf, mr) {
+                        match self.squares[idx] {
+                            None => true,
+                            Some((pc, _)) => pc == color,
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+            PieceKind::Dragon => {
+                let (ff, fr) = index_to_coord(from);
+                let (tf, tr) = index_to_coord(to);
+                let df = tf - ff;
+                let dr = tr - fr;
+                if df != 0 && dr != 0 {
+                    return false;
+                }
+                if df == 0 && dr == 0 {
+                    return false;
+                }
+                let sf = df.signum();
+                let sr = dr.signum();
+                let mut cf = ff + sf;
+                let mut cr = fr + sr;
+                while (cf, cr) != (tf, tr) {
+                    if let Some(idx) = coord_to_index(cf, cr) {
+                        match self.squares[idx] {
+                            None => {}
+                            Some((pc, _)) => {
+                                if pc != color {
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                    cf += sf;
+                    cr += sr;
+                }
+                true
+            }
+            PieceKind::Knight => {
+                let (ff, fr) = index_to_coord(from);
+                let (tf, tr) = index_to_coord(to);
+                let fwd = if color == Color::White { 1 } else { -1 };
+                tr - fr == fwd && (tf - ff).abs() == 1
+            }
+        }
+    }
+
+    fn sliding_attack(
+        &self,
+        from: usize,
+        to: usize,
+        direction_match: fn(i8, i8) -> bool,
+    ) -> bool {
+        let (ff, fr) = index_to_coord(from);
+        let (tf, tr) = index_to_coord(to);
+        let df = tf - ff;
+        let dr = tr - fr;
+        if !direction_match(df, dr) {
+            return false;
+        }
+        if df == 0 && dr == 0 {
+            return false;
+        }
+        let sf = df.signum();
+        let sr = dr.signum();
+        let mut cf = ff + sf;
+        let mut cr = fr + sr;
+        while (cf, cr) != (tf, tr) {
+            if let Some(idx) = coord_to_index(cf, cr) {
+                if self.squares[idx].is_some() {
+                    return false; // blocked
+                }
+            }
+            cf += sf;
+            cr += sr;
+        }
+        true
+    }
+
+    /// Count pseudo-legal moves without allocating.
+    pub fn count_all_moves(&self, color: Color) -> u32 {
+        let mut n = 0u32;
+        for sq in 0..64 {
+            if let Some((pc, _)) = self.squares[sq]
+                && pc == color
+            {
+                n += self.generate_moves_for(sq, false).len() as u32;
+            }
+        }
+        n
+    }
+
+    /// Count pseudo-legal captures without allocating.
+    pub fn count_captures(&self, color: Color) -> u32 {
+        let mut n = 0u32;
+        for sq in 0..64 {
+            if let Some((pc, _)) = self.squares[sq]
+                && pc == color
+            {
+                n += self.generate_moves_for(sq, true).len() as u32;
+            }
+        }
+        n
+    }
+
     /// Pseudolegal moves that do **not** leave the moving side's own emperor in check.
+    ///
+    /// Optimised with pin detection: when no opponent slider can discover a check,
+    /// only the emperor's own moves need the full legality check.
     pub fn generate_legal_moves(&self, color: Color) -> Vec<Move> {
         let pseudo = self.generate_all_moves(color);
-        pseudo
-            .into_iter()
-            .filter(|mv| {
-                let child = self.make_move(mv);
-                !child.is_in_check(color)
-            })
-            .collect()
+        let king_sq = match self.find_king(color) {
+            Some(sq) => sq,
+            None => return pseudo,
+        };
+        let in_check = self.is_in_check(color);
+        let has_pins = in_check || self.has_pin_threat(king_sq, color);
+
+        if !has_pins {
+            // No pins: only the emperor's own moves need checking.
+            pseudo
+                .into_iter()
+                .filter(|mv| {
+                    if mv.from as usize == king_sq {
+                        let child = self.make_move(mv);
+                        !child.is_in_check(color)
+                    } else {
+                        true
+                    }
+                })
+                .collect()
+        } else {
+            // In check or a pin exists: check every move.
+            pseudo
+                .into_iter()
+                .filter(|mv| {
+                    let child = self.make_move(mv);
+                    !child.is_in_check(color)
+                })
+                .collect()
+        }
     }
 
     /// Legal capture‑only moves (for quiescence search).
     pub fn generate_legal_captures(&self, color: Color) -> Vec<Move> {
         let pseudo = self.generate_captures(color);
+        if self.find_king(color).is_none() {
+            return pseudo;
+        }
         pseudo
             .into_iter()
             .filter(|mv| {

@@ -7,13 +7,23 @@ use std::sync::{
 };
 use std::time::Duration;
 
+/// Result of a completed search.
+#[derive(Debug, Clone, Copy)]
+pub struct SearchResult {
+    pub best_move: Move,
+    /// Score in centipawns (positive = good for the side to move).
+    pub score: i32,
+    /// How many plies (half-moves) of iterative deepening were completed.
+    pub depth: u32,
+}
+
 const INF: i32 = 999_999;
 const MATE_SCORE: i32 = 90_000;
 const MAX_PLY: usize = 128;
 
-// Null-move reduction: R = 3 + depth/6
+// Null-move reduction: R = 2 + depth/6  (less aggressive → fewer blunders)
 fn null_move_r(depth: u32) -> u32 {
-    3 + depth / 6
+    2 + depth / 6
 }
 
 // Futility margin: max possible position gain in one quiet move
@@ -143,7 +153,7 @@ impl SearchThread {
         // Aspiration window
         let mut alpha = -INF;
         let mut beta = INF;
-        let mut delta = 50;
+        let mut delta = 75;
 
         let mut best_score;
         let mut best_move;
@@ -459,7 +469,10 @@ impl SearchThread {
             return 1_000_000;
         }
 
-        // Captures scored by MVV-LVA
+        // Captures ordered by a simple SEE approximation:
+        //   winning trades → near hash-move priority
+        //   equal trades   → above killers
+        //   losing trades  → above history but below killers
         if mv.capture {
             let victim = board
                 .get(mv.to as usize)
@@ -469,7 +482,14 @@ impl SearchThread {
                 .get(mv.from as usize)
                 .map(|(_, k)| k.value())
                 .unwrap_or(0);
-            return 500_000 + victim * 100 - attacker;
+            let see = victim - attacker;
+            if see > 0 {
+                return 800_000 + see * 10;
+            } else if see == 0 {
+                return 500_000;
+            } else {
+                return (200_000 + see * 10).max(0);
+            }
         }
 
         // Killer moves
@@ -509,9 +529,14 @@ impl SearchThread {
                 .get(mv.from as usize)
                 .map(|(_, k)| k.value())
                 .unwrap_or(0);
-
-            // Higher victim / lower attacker first
-            victim * 128 - attacker
+            let see = victim - attacker;
+            if see > 0 {
+                800_000 + see * 10
+            } else if see == 0 {
+                500_000
+            } else {
+                (200_000 + see * 10).max(0)
+            }
         });
     }
 
@@ -535,7 +560,7 @@ impl SearchThread {
 // Public API: find_best_move with Lazy SMP
 // ---------------------------------------------------------------------------
 
-pub fn find_best_move(board: &Board, time_limit: Duration) -> Option<Move> {
+pub fn find_best_move(board: &Board, time_limit: Duration) -> Option<SearchResult> {
     let tt = Arc::new(TranspositionTable::new());
     let stop = Arc::new(AtomicBool::new(false));
     let best_result: Arc<Mutex<Option<(Move, i32, u32)>>> = Arc::new(Mutex::new(None));
@@ -570,9 +595,23 @@ pub fn find_best_move(board: &Board, time_limit: Duration) -> Option<Move> {
         let _ = h.join();
     }
 
-    best_result
-        .lock()
-        .unwrap()
-        .map(|(mv, _, _)| mv)
-        .or_else(|| board.generate_legal_moves(board.turn).first().copied())
+    {
+        let guard = best_result.lock().unwrap();
+        if let Some(&(mv, score, depth)) = guard.as_ref() {
+            return Some(SearchResult {
+                best_move: mv,
+                score,
+                depth,
+            });
+        }
+    }
+    board
+        .generate_legal_moves(board.turn)
+        .first()
+        .copied()
+        .map(|mv| SearchResult {
+            best_move: mv,
+            score: 0,
+            depth: 0,
+        })
 }

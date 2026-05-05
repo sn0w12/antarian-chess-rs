@@ -6,3 +6,10 @@ edition = "2024"
 [dependencies]
 chess_engine = { path = "../engine" }
 dashmap = "5.5.3"
+
+[dev-dependencies]
+criterion = "0.8.2"
+
+[[bench]]
+name = "bot_bench"
+harness = false

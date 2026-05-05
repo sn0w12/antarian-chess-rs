@@ -10,20 +10,20 @@ use chess_engine::{Board, Color, PieceKind};
 
 const MG: [i32; 6] = [
     10_000, // Emperor
-    975,    // Empress
-    680,    // Priest
-    600,    // Paladin
-    525,    // Dragon
-    100,    // Knight
+    900,    // Empress
+    800,    // Priest  (bishop+knight hybrid — extremely versatile)
+    500,    // Paladin (king+dabbaba — short-range, situational)
+    600,    // Dragon  (rook that jumps over friendlies — never blocked)
+    100,    // Knight  (pawn)
 ];
 
 const EG: [i32; 6] = [
     10_000, // Emperor
-    975,    // Empress
-    630,    // Priest  (slightly less dominant without many diagonals)
-    560,    // Paladin
-    490,    // Dragon
-    120,    // Knight
+    950,    // Empress  (relatively stronger in open endgames)
+    700,    // Priest
+    500,    // Paladin
+    500,    // Dragon
+    150,    // Knight  (pawns become more valuable as promotion nears)
 ];
 
 // ---------------------------------------------------------------------------
@@ -86,16 +86,18 @@ const PST_MG: [[i32; 64]; 6] = [
           5, 10, 10, 10, 10, 10, 10,  5,
           0,  0,  0,  5,  5,  0,  0,  0,
     ],
-    /* Knight — advance and central files */
+    /* Knight — rewarded for advancing and central control.
+       No promotions exist in Antarian Chess, so values simply increase
+       with advancement and favour the centre files. */
     [
-          0,  0,  0,  0,  0,  0,  0,  0,
-         50, 50, 50, 55, 55, 50, 50, 50,
-         10, 10, 20, 35, 35, 20, 10, 10,
-          5,  5, 15, 30, 30, 15,  5,  5,
-          0,  0, 10, 25, 25, 10,  0,  0,
-          5, -5,-10,  0,  0,-10, -5,  5,
-          5, 10, 10,-20,-20, 10, 10,  5,
-          0,  0,  0,  0,  0,  0,  0,  0,
+          0,  0,  0,  0,  0,  0,  0,  0,   // rank 0  (back rank — never here)
+          5, 10, 15, 20, 20, 15, 10,  5,   // rank 1  (starting rank — push to advance)
+         15, 20, 25, 35, 35, 25, 20, 15,   // rank 2
+         25, 35, 40, 50, 50, 40, 35, 25,   // rank 3
+         35, 45, 55, 65, 65, 55, 45, 35,   // rank 4  (centre control)
+         40, 50, 60, 70, 70, 60, 50, 40,   // rank 5
+         45, 55, 65, 75, 75, 65, 55, 45,   // rank 6
+         35, 45, 55, 65, 65, 55, 45, 35,   // rank 7  (last rank — still valuable)
     ],
 ];
 
@@ -159,16 +161,16 @@ const PST_EG: [[i32; 64]; 6] = [
           5, 10, 10, 10, 10, 10, 10,  5,
           0,  5,  5,  5,  5,  5,  5,  0,
     ],
-    /* Knight */
+    /* Knight — even more valuable in endgames */
     [
-          0,  0,  0,  0,  0,  0,  0,  0,
-         45, 45, 45, 45, 45, 45, 45, 45,
-         25, 25, 25, 25, 25, 25, 25, 25,
-          5,  5,  5,  5,  5,  5,  5,  5,
-         -5, -5, -5, -5, -5, -5, -5, -5,
-         -5, -5, -5, -5, -5, -5, -5, -5,
-         -5, -5, -5, -5, -5, -5, -5, -5,
-          0,  0,  0,  0,  0,  0,  0,  0,
+          0,  0,  0,  0,  0,  0,  0,  0,   // rank 0
+          5, 10, 15, 20, 20, 15, 10,  5,   // rank 1
+         20, 25, 30, 40, 40, 30, 25, 20,   // rank 2
+         35, 40, 50, 60, 60, 50, 40, 35,   // rank 3
+         50, 55, 65, 75, 75, 65, 55, 50,   // rank 4
+         60, 65, 75, 85, 85, 75, 65, 60,   // rank 5
+         70, 75, 85, 95, 95, 85, 75, 70,   // rank 6
+         60, 65, 75, 85, 85, 75, 65, 60,   // rank 7
     ],
 ];
 
@@ -251,11 +253,10 @@ fn king_safety(board: &Board, color: Color) -> i32 {
 // Mobility
 // ---------------------------------------------------------------------------
 
-/// Small bonus for having more legal moves.
+/// Small bonus for having more moves (pseudo-legal is cheap enough).
 fn mobility(board: &Board, color: Color) -> i32 {
-    let n = board.generate_legal_moves(color).len() as i32;
-    // 3 centipawns per move, capped at ~100
-    (n * 3).min(90)
+    let n = board.count_all_moves(color) as i32;
+    (n * 2).min(60)
 }
 
 // ---------------------------------------------------------------------------
@@ -334,14 +335,21 @@ fn kind_index(kind: PieceKind) -> usize {
 
 fn knight_structure(board: &Board, color: Color) -> i32 {
     let mut bonus = 0i32;
+    let home_rank = if color == Color::White { 1 } else { 6 };
     for sq in 0..64 {
         if board.get(sq) == Some((color, PieceKind::Knight)) {
+            let rank = sq / 8;
             let file = (sq % 8) as i32;
+            // Connected pawns
             if file > 0 && board.get(sq - 1) == Some((color, PieceKind::Knight)) {
-                bonus += 12;
+                bonus += 15;
             }
             if file < 7 && board.get(sq + 1) == Some((color, PieceKind::Knight)) {
-                bonus += 12;
+                bonus += 15;
+            }
+            // Advancement bonus on top of PST
+            if rank > home_rank {
+                bonus += (rank as i32 - home_rank as i32) * 8;
             }
         }
     }
@@ -356,7 +364,6 @@ fn development(board: &Board, color: Color) -> i32 {
         let sq = back_rank * 8 + file;
         if let Some((pc, kind)) = board.get(sq)
             && pc == color
-            && kind != PieceKind::Knight
             && kind != PieceKind::Emperor
         {
             score -= match kind {
@@ -364,8 +371,17 @@ fn development(board: &Board, color: Color) -> i32 {
                 PieceKind::Priest => 10,
                 PieceKind::Paladin => 10,
                 PieceKind::Dragon => 7,
+                PieceKind::Knight => 6,
                 _ => 0,
             };
+        }
+    }
+    // Also penalise knights that haven't advanced past rank 1 from their start.
+    let pawn_rank = if color == Color::White { 1 } else { 6 };
+    for file in 0..8 {
+        let sq = pawn_rank * 8 + file;
+        if board.get(sq) == Some((color, PieceKind::Knight)) {
+            score -= 8;
         }
     }
     score

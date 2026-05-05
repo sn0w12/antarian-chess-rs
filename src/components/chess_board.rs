@@ -29,10 +29,16 @@ fn think_time(board: &Board, white_time: f64, black_time: f64, move_count: u32) 
     let pseudolegal = board.generate_all_moves(board.turn).len().max(1) as f64;
     let complexity = (pseudolegal / 30.0).clamp(0.5, 2.0);
 
-    // Never use more than 25 % of remaining time on one move.
-    let max_time = remaining * 0.25;
-    // Spend at least 0.3 s or at most max_time, whichever is larger.
-    let base = (per_move * complexity).clamp(0.3, max_time.max(0.3));
+    // Never use more than 33 % of remaining time on one move.
+    let max_time = remaining * 0.33;
+    // Spend at least 0.5 s.
+    let mut base = (per_move * complexity).clamp(0.5, max_time.max(0.5));
+
+    // Early-game bonus: invest more time in the opening and early middlegame
+    // when the position is still complex and plans are being formed.
+    if move_count < 20 {
+        base = (base * 1.5).min(max_time.max(0.5));
+    }
 
     Duration::from_secs_f64(base)
 }
@@ -127,6 +133,9 @@ pub struct ChessBoard {
     pub opponent_name: String,
     pub online_tx: Option<mpsc::UnboundedSender<String>>,
     pub leave_requested: bool,
+
+    pub bot_score: Option<i32>,
+    pub bot_depth: Option<u32>,
 }
 
 impl ChessBoard {
@@ -149,6 +158,8 @@ impl ChessBoard {
             opponent_name: String::new(),
             online_tx: None,
             leave_requested: false,
+            bot_score: None,
+            bot_depth: None,
         }
     }
 
@@ -169,6 +180,8 @@ impl ChessBoard {
         self.time_forfeit = false;
         self.online_tx = None;
         self.leave_requested = false;
+        self.bot_score = None;
+        self.bot_depth = None;
         self.refresh_status();
     }
 
@@ -384,12 +397,12 @@ impl ChessBoard {
     cx.spawn(|weak: WeakEntity<ChessBoard>, async_app: &mut AsyncApp| {
         let app = async_app.clone();
         async move {
-            if let Some(mv) = task.await
+            if let Some(result) = task.await
                 && let Some(entity) = weak.upgrade()
             {
                 let _ = app.update(|app| {
                     let _ = entity.update(app, |this, cx| {
-                        this.exec_move_async(mv, cx);
+                        this.exec_move_async(result, cx);
                     });
                 });
             }
@@ -398,13 +411,16 @@ impl ChessBoard {
     .detach();
     }
 
-    fn exec_move_async(&mut self, mv: Move, cx: &mut Context<Self>) {
+    fn exec_move_async(&mut self, result: chess_bot::SearchResult, cx: &mut Context<Self>) {
+        let mv = result.best_move;
         let was_capture = mv.capture;
         if was_capture
             && let Some((_, kind)) = self.game_state.get(mv.to as usize)
         {
             self.captured_us.push(kind);
         }
+        self.bot_score = Some(result.score);
+        self.bot_depth = Some(result.depth);
         self.game_state = self.game_state.make_move(&mv);
         self.selected_square = None;
         self.legal_targets.clear();
@@ -550,6 +566,22 @@ fn sidebar(this: &ChessBoard, cx: &Context<ChessBoard>) -> AnyElement {
                 .child(this.status_message.clone()),
         )
         .child(Separator::horizontal().w_full())
+        .children(
+            (this.game_mode == GameMode::Bot).then(|| {
+                let score_str = this.bot_score.map(fmt_score).unwrap_or_default();
+                let depth_str = this
+                    .bot_depth
+                    .map(|d| format!("{d}"))
+                    .unwrap_or_default();
+                v_flex()
+                    .w_full()
+                    .px_2()
+                    .gap_1()
+                    .child(detail(t, "Bot Eval", &score_str))
+                    .child(detail(t, "Search Depth", &depth_str))
+            }),
+        )
+        .child(Separator::horizontal().w_full())
         .child(clock_row("White", &white_time, Color::White, this, t))
         .child(clock_row("Black", &black_time, Color::Black, this, t))
         .child(Separator::horizontal().w_full())
@@ -608,6 +640,20 @@ fn clock_row(label: &str, time: &str, color: Color, board: &ChessBoard, t: &gpui
         .child(Label::new(label).w(px(56.)).text_color(t.muted_foreground))
         .child(Label::new(time).text_color(if active { t.primary } else { t.foreground }))
         .into_any_element()
+}
+
+fn fmt_score(score: i32) -> String {
+    if score.abs() >= 90_000 {
+        let mate_in = (100_000 - score.abs()) / 2;
+        format!("Mate in {mate_in}")
+    } else {
+        let centipawns = score as f64 / 100.0;
+        if centipawns > 0.0 {
+            format!("+{:.2}", centipawns)
+        } else {
+            format!("{:.2}", centipawns)
+        }
+    }
 }
 
 fn fmt_time(seconds: f64) -> String {

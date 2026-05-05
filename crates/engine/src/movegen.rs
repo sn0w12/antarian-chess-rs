@@ -1,4 +1,4 @@
-use crate::board::{Board, coord_to_index, index_to_coord};
+use crate::rays;
 use crate::types::{Color, Move};
 
 /// Sliding moves in the given directions.
@@ -6,7 +6,7 @@ use crate::types::{Color, Move};
 /// (capturing opponent pieces, skipping own pieces).
 /// If `captures_only` is true, only capture moves are generated.
 pub fn generate_sliding_moves(
-    board: &Board,
+    board: &crate::board::Board,
     from: usize,
     color: Color,
     directions: &[(i8, i8)],
@@ -14,97 +14,36 @@ pub fn generate_sliding_moves(
     captures_only: bool,
 ) -> Vec<Move> {
     let mut moves = Vec::new();
-    let (f, r) = index_to_coord(from);
+    let sqs = board.squares();
     for &(df, dr) in directions {
-        let mut file = f + df;
-        let mut rank = r + dr;
-        while let Some(idx) = coord_to_index(file, rank) {
-            match board.get(idx) {
-                None => {
-                    if !captures_only {
-                        moves.push(Move {
-                            from: from as u8,
-                            to: idx as u8,
-                            capture: false,
-                        });
-                    }
-                }
-                Some((pc, _)) => {
-                    if pc != color {
-                        moves.push(Move {
-                            from: from as u8,
-                            to: idx as u8,
-                            capture: true,
-                        });
-                    }
-                    if !jump {
-                        break;
-                    }
-                }
-            }
-            file += df;
-            rank += dr;
-        }
+        let dir = match (df, dr) {
+            (-1, -1) => 0,
+            (-1,  0) => 1,
+            (-1,  1) => 2,
+            ( 0, -1) => 3,
+            ( 0,  1) => 4,
+            ( 1, -1) => 5,
+            ( 1,  0) => 6,
+            ( 1,  1) => 7,
+            _ => continue,
+        };
+        rays::generate_ray_moves(from, dir, sqs, color, captures_only, jump, &mut moves);
     }
     moves
 }
 
 /// Leaper moves defined by `offsets`.
-/// If `jump` is false, the intermediate square (for offsets with one leg longer)
-/// must be empty; otherwise the move is blocked.
-/// If `captures_only` is true, only capture moves are generated.
 pub fn generate_leaper_moves(
-    board: &Board,
+    board: &crate::board::Board,
     from: usize,
     color: Color,
-    offsets: &[(i8, i8)],
+    offsets: &'static [(i8, i8)],
     jump: bool,
     captures_only: bool,
 ) -> Vec<Move> {
-    let (f, r) = index_to_coord(from);
-    offsets
-        .iter()
-        .filter_map(|&(df, dr)| {
-            let to_file = f + df;
-            let to_rank = r + dr;
-            coord_to_index(to_file, to_rank).and_then(|to| {
-                // Check blocking intermediate square if not jumping
-                if !jump {
-                    let adf = df.abs();
-                    let adr = dr.abs();
-                    if adf > adr {
-                        let intermediate = coord_to_index(f + df.signum(), r);
-                        if intermediate.is_some_and(|i| board.get(i).is_some()) {
-                            return None;
-                        }
-                    } else if adr > adf {
-                        let intermediate = coord_to_index(f, r + dr.signum());
-                        if intermediate.is_some_and(|i| board.get(i).is_some()) {
-                            return None;
-                        }
-                    }
-                }
-
-                match board.get(to) {
-                    None => {
-                        if captures_only {
-                            None
-                        } else {
-                            Some(Move {
-                                from: from as u8,
-                                to: to as u8,
-                                capture: false,
-                            })
-                        }
-                    }
-                    Some((pc, _)) if pc != color => Some(Move {
-                        from: from as u8,
-                        to: to as u8,
-                        capture: true,
-                    }),
-                    _ => None,
-                }
-            })
-        })
-        .collect()
+    let mut moves = Vec::new();
+    let sqs = board.squares();
+    let set = rays::LeaperSet::new(offsets);
+    set.generate(from, sqs, color, captures_only, jump, &mut moves);
+    moves
 }
