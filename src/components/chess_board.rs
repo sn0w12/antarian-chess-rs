@@ -3,14 +3,17 @@ use chess_bot::find_best_move;
 use chess_engine::*;
 use chess_server::protocol::ClientMessage;
 use gpui::{
-    AnyElement, AppContext, AsyncApp, Context, Entity, Hsla, Image, ImageFormat, IntoElement,
-    ObjectFit, ParentElement, Render, Styled, StyledImage, WeakEntity, Window, div, hsla, img, px,
+    AnyElement, AppContext, AsyncApp, AvailableSpace, Context, Entity, Hsla, Image, ImageFormat,
+    IntoElement, ObjectFit, ParentElement, Pixels, Render, ScrollStrategy, SharedString, Size, Styled,
+    StyledImage, Window, WeakEntity, div, hsla, img, px, size,
 };
 use gpui_component::{
-    ActiveTheme, button::Button, h_flex, label::Label, separator::Separator, v_flex,
+    ActiveTheme, VirtualListScrollHandle, button::Button, h_flex, label::Label,
+    separator::Separator, v_flex, v_virtual_list,
     input::{Input, InputState},
-    scroll::ScrollableElement,
+    scroll::Scrollbar,
 };
+use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -45,6 +48,11 @@ fn think_time(board: &Board, white_time: f64, black_time: f64, move_count: u32) 
     Duration::from_secs_f64(base)
 }
 const INITIAL_TIME: f64 = 600.0; // 10 minutes per player
+const CHAT_FONT_SIZE: Pixels = px(16.);
+const CHAT_LINE_HEIGHT: Pixels = px(20.);
+const ROOT_GAP: Pixels = px(8.);
+const SIDEBAR_HORIZONTAL_PADDING: Pixels = px(16.);
+const CHAT_MIN_WRAP_WIDTH: Pixels = px(80.);
 
 // ---------------------------------------------------------------------------
 // Piece image cache
@@ -149,6 +157,10 @@ pub struct ChessBoard {
     last_move: Option<Move>,
     chat_messages: Vec<ChatEntry>,
     chat_input: Entity<InputState>,
+    chat_scroll_handle: VirtualListScrollHandle,
+    chat_item_sizes: Rc<Vec<Size<Pixels>>>,
+    chat_list_width: Pixels,
+    pending_chat_scroll: bool,
 }
 
 impl ChessBoard {
@@ -178,6 +190,10 @@ impl ChessBoard {
             last_move: None,
             chat_messages: Vec::new(),
             chat_input,
+            chat_scroll_handle: VirtualListScrollHandle::new(),
+            chat_item_sizes: Rc::new(Vec::new()),
+            chat_list_width: px(0.),
+            pending_chat_scroll: false,
         }
     }
 
@@ -202,6 +218,9 @@ impl ChessBoard {
         self.bot_depth = None;
         self.last_move = None;
         self.chat_messages.clear();
+        self.chat_item_sizes = Rc::new(Vec::new());
+        self.chat_list_width = px(0.);
+        self.pending_chat_scroll = false;
         self.refresh_status();
     }
 
@@ -457,6 +476,7 @@ impl ChessBoard {
             message,
             is_ours,
         });
+        self.pending_chat_scroll = true;
     }
 
     pub fn push_system_chat_message(&mut self, message: String) {
@@ -465,6 +485,7 @@ impl ChessBoard {
             message,
             is_ours: false,
         });
+        self.pending_chat_scroll = true;
     }
 
     pub fn send_chat_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -495,6 +516,38 @@ impl ChessBoard {
             });
         }
     }
+
+    fn refresh_chat_item_sizes(
+        &mut self,
+        list_width: Pixels,
+        font_family: SharedString,
+        foreground: Hsla,
+        primary: Hsla,
+        muted: Hsla,
+        muted_foreground: Hsla,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.chat_list_width = list_width;
+        self.chat_item_sizes = Rc::new(
+            self.chat_messages
+                .iter()
+                .map(|entry| {
+                    chat_item_size(
+                        entry,
+                        list_width,
+                        &font_family,
+                        foreground,
+                        primary,
+                        muted,
+                        muted_foreground,
+                        window,
+                        cx,
+                    )
+                })
+                .collect(),
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +556,29 @@ impl ChessBoard {
 
 impl Render for ChessBoard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let list_width = chat_list_width(window, &self.chat_scroll_handle);
+        let font_family = cx.theme().font_family.clone();
+        let t = cx.theme();
+        if list_width != self.chat_list_width || self.chat_item_sizes.len() != self.chat_messages.len()
+        {
+            self.refresh_chat_item_sizes(
+                list_width,
+                font_family.clone(),
+                t.foreground,
+                t.primary,
+                t.muted,
+                t.muted_foreground,
+                window,
+                cx,
+            );
+        }
+        if self.pending_chat_scroll {
+            let last_ix = self.chat_messages.len().saturating_sub(1);
+            self.chat_scroll_handle
+                .scroll_to_item(last_ix, ScrollStrategy::Bottom);
+            self.pending_chat_scroll = false;
+        }
+
         let flip = self.player_color == Color::White;
         h_flex()
             .size_full()
@@ -660,61 +736,57 @@ fn sidebar(this: &ChessBoard, _window: &mut Window, cx: &mut Context<ChessBoard>
                 .flex_1()
                 .gap_2()
                 .child(Label::new("Match Chat").text_color(t.muted_foreground))
-                .child(
+                .child(if this.chat_messages.is_empty() {
                     div()
                         .flex_1()
                         .max_h(px(200.))
-                        .overflow_y_scrollbar()
                         .p_2()
                         .rounded_md()
                         .bg(t.muted.opacity(0.15))
+                        .child(Label::new("No messages yet.").text_color(t.muted_foreground))
+                        .into_any_element()
+                } else {
+                    div()
+                        .relative()
+                        .flex_1()
+                        .rounded_md()
+                        .bg(t.muted.opacity(0.15))
+                        .overflow_hidden()
                         .child(
-                            v_flex().w_full().gap_2().children(if this.chat_messages.is_empty() {
-                                vec![
-                                    Label::new("No messages yet.")
-                                        .text_color(t.muted_foreground)
-                                        .into_any_element(),
-                                ]
-                            } else {
-                                this.chat_messages
-                                    .iter()
-                                    .map(|entry| {
-                                        let body = div()
-                                            .w_full()
-                                            .p_2()
-                                            .rounded_md()
-                                            .bg(if entry.is_ours {
-                                                t.primary.opacity(0.18)
-                                            } else {
-                                                t.muted.opacity(0.25)
-                                            })
-                                            .child(
-                                                Label::new(entry.message.clone())
-                                                    .text_color(t.foreground),
-                                            );
-
-                                        let row = v_flex()
-                                            .w_full()
-                                            .gap_1()
-                                            .child(
-                                                Label::new(entry.sender_name.clone())
-                                                    .text_color(if entry.is_ours {
-                                                        t.primary
-                                                    } else {
-                                                        t.muted_foreground
-                                                    }),
-                                            );
-
-                                        if entry.is_ours {
-                                            row.items_end().child(body).into_any_element()
-                                        } else {
-                                            row.child(body).into_any_element()
-                                        }
-                                    })
-                                    .collect()
-                            }),
-                        ),
-                )
+                            v_virtual_list(
+                                cx.entity().clone(),
+                                "match-chat-list",
+                                this.chat_item_sizes.clone(),
+                                |board, visible_range, _, cx| {
+                                    let font_family = cx.theme().font_family.clone();
+                                    let foreground = cx.theme().foreground;
+                                    let primary = cx.theme().primary;
+                                    let muted = cx.theme().muted;
+                                    let muted_foreground = cx.theme().muted_foreground;
+                                    let list_width = board.chat_list_width;
+                                    visible_range
+                                        .map(|ix| {
+                                            let entry = board.chat_messages[ix].clone();
+                                            chat_row_element(
+                                                &entry,
+                                                list_width,
+                                                &font_family,
+                                                foreground,
+                                                primary,
+                                                muted,
+                                                muted_foreground,
+                                            )
+                                            .into_any_element()
+                                        })
+                                        .collect()
+                                },
+                            )
+                            .track_scroll(&this.chat_scroll_handle)
+                            .flex_1(),
+                        )
+                        .child(Scrollbar::vertical(&this.chat_scroll_handle))
+                        .into_any_element()
+                })
                 .child(
                     h_flex()
                         .w_full()
@@ -769,6 +841,102 @@ fn sidebar(this: &ChessBoard, _window: &mut Window, cx: &mut Context<ChessBoard>
                 })),
         )
         .into_any_element()
+}
+
+fn chat_item_size(
+    entry: &ChatEntry,
+    list_width: Pixels,
+    font_family: &SharedString,
+    foreground: Hsla,
+    primary: Hsla,
+    muted: Hsla,
+    muted_foreground: Hsla,
+    window: &mut Window,
+    cx: &mut Context<ChessBoard>,
+) -> Size<Pixels>
+{
+    let mut element = chat_row_element(
+        entry,
+        list_width,
+        font_family,
+        foreground,
+        primary,
+        muted,
+        muted_foreground,
+    )
+    .into_any_element();
+
+    element.layout_as_root(
+        size(
+            AvailableSpace::Definite(list_width),
+            AvailableSpace::MinContent,
+        ),
+        window,
+        cx,
+    )
+}
+
+fn chat_list_width(window: &Window, scroll_handle: &VirtualListScrollHandle) -> Pixels {
+    let measured_width = scroll_handle.bounds().size.width;
+    if measured_width > px(0.) {
+        return measured_width;
+    }
+
+    let viewport = window.viewport_size();
+    let sidebar_width = (viewport.width - viewport.height - ROOT_GAP).max(px(0.));
+    (sidebar_width - SIDEBAR_HORIZONTAL_PADDING).max(CHAT_MIN_WRAP_WIDTH)
+}
+
+fn chat_row_element(
+    entry: &ChatEntry,
+    _list_width: Pixels,
+    font_family: &SharedString,
+    foreground: Hsla,
+    primary: Hsla,
+    muted: Hsla,
+    muted_foreground: Hsla,
+) -> impl IntoElement {
+    let bubble_bg = if entry.is_ours {
+        primary.opacity(0.18)
+    } else {
+        muted.opacity(0.25)
+    };
+    let sender_color = if entry.is_ours {
+        primary
+    } else {
+        muted_foreground
+    };
+
+    let body = div()
+        .w_full()
+        .p_2()
+        .rounded_md()
+        .bg(bubble_bg)
+        .child(
+            Label::new(entry.message.clone())
+                .font_family(font_family.clone())
+                .text_size(CHAT_FONT_SIZE)
+                .line_height(CHAT_LINE_HEIGHT)
+                .text_color(foreground),
+        );
+
+    let row = v_flex()
+        .w_full()
+        .p_2()
+        .gap_1()
+        .child(
+            Label::new(entry.sender_name.clone())
+                .font_family(font_family.clone())
+                .text_size(CHAT_FONT_SIZE)
+                .line_height(CHAT_LINE_HEIGHT)
+                .text_color(sender_color),
+        );
+
+    if entry.is_ours {
+        row.items_end().child(body)
+    } else {
+        row.child(body)
+    }
 }
 
 fn clock_row(
