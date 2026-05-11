@@ -137,7 +137,7 @@ enum OnlineIntent {
 // ChessApp (root)
 // ---------------------------------------------------------------------------
 
-struct ChessApp {
+pub(crate) struct ChessApp {
     focus_handle: FocusHandle,
     view: View,
     board: Entity<ChessBoard>,

@@ -1,4 +1,4 @@
-use crate::{WsCommand, audio};
+use crate::{ChessApp, WsCommand, audio, dialogs::ConfirmDialogOptions};
 use chess_bot::find_best_move;
 use chess_engine::*;
 use chess_server::protocol::ClientMessage;
@@ -901,11 +901,26 @@ fn sidebar(this: &ChessBoard, _window: &mut Window, cx: &mut Context<ChessBoard>
         .child(Separator::horizontal().w_full())
         .child(Button::new("leave-btn").w_full().label("Leave").on_click({
             let weak = cx.weak_entity();
-            move |_, _window, cx| {
-                let _ = weak.update(cx, |this, cx| {
-                    this.leave_requested = true;
-                    cx.notify();
-                });
+            move |_, window, cx| {
+                ChessApp::show_confirm_dialog(
+                    window,
+                    cx,
+                    ConfirmDialogOptions::new(
+                        "Leave game?",
+                        "This will leave the current match and disconnect you from online play.",
+                    )
+                    .confirm_label("Leave")
+                    .cancel_label("Stay"),
+                    {
+                        let weak = weak.clone();
+                        move |_window, cx| {
+                            let _ = weak.update(cx, |this, cx| {
+                                this.leave_requested = true;
+                                cx.notify();
+                            });
+                        }
+                    },
+                );
             }
         }))
         .child(Separator::horizontal().w_full())
