@@ -4,8 +4,9 @@ mod audio;
 mod components;
 mod theme;
 
+use machine_uid::get as machine_uid;
 use chess_engine::Color;
-use chess_server::protocol::{ClientMessage, LobbySummary, ServerMessage};
+use chess_server::protocol::{ClientInfo, ClientMessage, LobbySummary, ServerMessage};
 use futures_util::{SinkExt, StreamExt};
 use gpui::{
     App, AppContext, AsyncApp, Bounds, Context, Entity, FocusHandle, Focusable, InteractiveElement,
@@ -35,10 +36,31 @@ use tokio::sync::mpsc;
 use tokio::time;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
 use crate::components::chess_board::{ChessBoard, GameMode};
 
 const WS_URL: &str = "wss://chess.arathia.net/";
+const PROTOCOL_VERSION: u32 = 1;
+
+#[derive(Clone, Debug)]
+pub(crate) enum WsCommand {
+    Text(String),
+    Close(Option<String>),
+}
+
+fn build_client_info() -> ClientInfo {
+    ClientInfo {
+        client_version: env!("CARGO_PKG_VERSION").to_string(),
+        machine_id: machine_uid().unwrap_or_else(|_| "unknown".to_string()),
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        debug: cfg!(debug_assertions),
+        app_name: env!("CARGO_PKG_NAME").to_string(),
+        protocol_version: PROTOCOL_VERSION,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Settings persistence
@@ -121,7 +143,7 @@ struct ChessApp {
     _volume_subscription: Subscription,
     _name_subscription: Subscription,
 
-    online_tx: Option<mpsc::UnboundedSender<String>>,
+    online_tx: Option<mpsc::UnboundedSender<WsCommand>>,
 
     name_input: Entity<InputState>,
     lobby_code_input: Entity<InputState>,
@@ -226,7 +248,8 @@ impl ChessApp {
         };
         cx.notify();
 
-        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let client_info = build_client_info();
+        let (tx, mut rx) = mpsc::unbounded_channel::<WsCommand>();
         self.online_tx = Some(tx);
 
         let weak = cx.weak_entity();
@@ -256,7 +279,11 @@ impl ChessApp {
 
                 let (mut write, mut read) = ws.split();
 
-                let join = serde_json::to_string(&ClientMessage::Join { name }).unwrap();
+                let join = serde_json::to_string(&ClientMessage::Join {
+                    name,
+                    client: client_info,
+                })
+                .unwrap();
                 if write.send(Message::Text(join)).await.is_err() {
                     app.update(|app| {
                         if let Some(entity) = weak.upgrade() {
@@ -284,8 +311,20 @@ impl ChessApp {
                                 let Some(msg) = maybe_msg else {
                                     break;
                                 };
-                                if write.send(Message::Text(msg)).await.is_err() {
-                                    break;
+                                match msg {
+                                    WsCommand::Text(text) => {
+                                        if write.send(Message::Text(text)).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    WsCommand::Close(reason) => {
+                                        let frame = CloseFrame {
+                                            code: CloseCode::Normal,
+                                            reason: reason.unwrap_or_default().into(),
+                                        };
+                                        let _ = write.send(Message::Close(Some(frame))).await;
+                                        break;
+                                    }
                                 }
                             }
                             _ = heartbeat.tick() => {
@@ -343,8 +382,8 @@ impl ChessApp {
         .detach();
     }
 
-    fn cancel_matchmaking(&mut self, cx: &mut Context<Self>) {
-        if let Some(tx) = &self.online_tx {
+    fn disconnect_online(&mut self, reason: impl Into<String>) {
+        if let Some(tx) = self.online_tx.take() {
             let leave_msg = match self.online_intent.as_ref() {
                 Some(OnlineIntent::RandomMatchmaking) => Some(ClientMessage::LeaveMatchmaking),
                 Some(OnlineIntent::CreatePublicLobby | OnlineIntent::CreatePrivateLobby) => {
@@ -355,10 +394,19 @@ impl ChessApp {
             if let Some(msg) = leave_msg
                 && let Ok(payload) = serde_json::to_string(&msg)
             {
-                let _ = tx.send(payload);
+                let _ = tx.send(WsCommand::Text(payload));
             }
+            if let Ok(payload) = serde_json::to_string(&ClientMessage::Disconnect {
+                reason: Some(reason.into()),
+            }) {
+                let _ = tx.send(WsCommand::Text(payload));
+            }
+            let _ = tx.send(WsCommand::Close(Some("client_shutdown".to_string())));
         }
-        self.online_tx = None;
+    }
+
+    fn cancel_matchmaking(&mut self, cx: &mut Context<Self>) {
+        self.disconnect_online("cancel_waiting");
         self.online_intent = None;
         self.active_lobby_code = None;
         self.public_lobbies.clear();
@@ -380,7 +428,7 @@ impl ChessApp {
                 lobby_code: normalized.clone(),
             })
         {
-            let _ = tx.send(payload);
+            let _ = tx.send(WsCommand::Text(payload));
             self.online_status = format!("Joining lobby {normalized}...");
             cx.notify();
             return;
@@ -421,7 +469,7 @@ impl ChessApp {
                         },
                     };
                     if let Ok(payload) = serde_json::to_string(&next) {
-                        let _ = tx.send(payload);
+                        let _ = tx.send(WsCommand::Text(payload));
                     }
                 }
             }
@@ -980,6 +1028,9 @@ fn game_view(
     if app.board.read(cx).leave_requested {
         app.board
             .update(cx, |board, _| board.leave_requested = false);
+        if app.board.read(cx).game_mode == GameMode::Online {
+            app.disconnect_online("leave_game");
+        }
         app.back_to_menu(cx);
     }
     h_flex()

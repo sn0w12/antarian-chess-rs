@@ -1,4 +1,4 @@
-use crate::protocol::{ClientMessage, LobbySummary, ServerMessage};
+use crate::protocol::{ClientInfo, ClientMessage, LobbySummary, ServerMessage};
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,6 +28,7 @@ enum PlayerState {
 
 struct Player {
     name: String,
+    client_info: ClientInfo,
     tx: mpsc::UnboundedSender<ServerMessage>,
     state: PlayerState,
 }
@@ -86,6 +87,7 @@ impl GameServer {
     pub async fn register_player(
         &self,
         name: String,
+        client_info: ClientInfo,
         tx: mpsc::UnboundedSender<ServerMessage>,
     ) -> PlayerId {
         let id = Uuid::new_v4().to_string();
@@ -94,10 +96,21 @@ impl GameServer {
             id.clone(),
             Player {
                 name,
+                client_info,
                 tx,
                 state: PlayerState::Idle,
             },
         );
+        if let Some(player) = inner.players.get(&id) {
+            eprintln!(
+                "Player connected: {} v{} {} {} hwid={}",
+                player.name,
+                player.client_info.client_version,
+                player.client_info.os,
+                player.client_info.arch,
+                player.client_info.machine_id
+            );
+        }
         id
     }
 
@@ -142,7 +155,16 @@ impl GameServer {
         };
 
         // Remove the player
-        inner.players.remove(player_id);
+        if let Some(player) = inner.players.remove(player_id) {
+            eprintln!(
+                "Player disconnected: {} v{} {} {} hwid={}",
+                player.name,
+                player.client_info.client_version,
+                player.client_info.os,
+                player.client_info.arch,
+                player.client_info.machine_id
+            );
+        }
 
         // Notify opponent and clean up games
         for (gid, opponent_id, was_over) in game_info {
@@ -763,14 +785,14 @@ pub async fn handle_connection(stream: TcpStream, server: GameServer) {
         }
 
         match parsed {
-            ClientMessage::Join { name } => {
+            ClientMessage::Join { name, client } => {
                 if player_id.is_some() {
                     let _ = tx.send(ServerMessage::Error {
                         message: "already joined".into(),
                     });
                     continue;
                 }
-                let id = server.register_player(name, tx.clone()).await;
+                let id = server.register_player(name, client, tx.clone()).await;
                 let _ = tx.send(ServerMessage::Joined {
                     player_id: id.clone(),
                 });
@@ -869,6 +891,16 @@ pub async fn handle_connection(stream: TcpStream, server: GameServer) {
                 if let Some(pid) = &player_id {
                     server.send_chat(pid, &game_id, &message).await;
                 }
+            }
+            ClientMessage::Disconnect { reason } => {
+                if let Some(pid) = &player_id {
+                    eprintln!(
+                        "Graceful disconnect from {}: {}",
+                        pid,
+                        reason.unwrap_or_else(|| "no reason provided".into())
+                    );
+                }
+                break;
             }
         }
     }

@@ -1,4 +1,4 @@
-use crate::audio;
+use crate::{WsCommand, audio};
 use chess_bot::find_best_move;
 use chess_engine::*;
 use chess_server::protocol::ClientMessage;
@@ -162,7 +162,7 @@ pub struct ChessBoard {
 
     pub game_id: Option<String>,
     pub opponent_name: String,
-    pub online_tx: Option<mpsc::UnboundedSender<String>>,
+    pub online_tx: Option<mpsc::UnboundedSender<WsCommand>>,
     pub leave_requested: bool,
     rematch_state: RematchState,
     timer_generation: u64,
@@ -383,7 +383,7 @@ impl ChessBoard {
             return;
         };
         if let Ok(payload) = serde_json::to_string(msg) {
-            let _ = tx.send(payload);
+            let _ = tx.send(WsCommand::Text(payload));
         }
     }
 
@@ -473,7 +473,7 @@ impl ChessBoard {
                     to: mv.to,
                 };
                 if let Ok(payload) = serde_json::to_string(&msg) {
-                    let _ = tx.send(payload);
+                    let _ = tx.send(WsCommand::Text(payload));
                 }
             }
         }
@@ -601,7 +601,7 @@ impl ChessBoard {
             message,
         };
         if let Ok(payload) = serde_json::to_string(&msg) {
-            let _ = tx.send(payload);
+            let _ = tx.send(WsCommand::Text(payload));
             self.chat_input.update(cx, |input, cx| {
                 input.set_value("", window, cx);
             });

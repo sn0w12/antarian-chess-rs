@@ -1,6 +1,24 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientInfo {
+    /// App version sent by the client binary.
+    pub client_version: String,
+    /// Stable machine identifier from the local platform.
+    pub machine_id: String,
+    /// Operating system name.
+    pub os: String,
+    /// CPU architecture.
+    pub arch: String,
+    /// Whether the client was built in debug mode.
+    pub debug: bool,
+    /// Human-readable application name.
+    pub app_name: String,
+    /// Protocol version for compatibility checks.
+    pub protocol_version: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LobbySummary {
     /// Stable lobby code used internally and for private invites.
     pub lobby_code: String,
@@ -16,6 +34,8 @@ pub enum ClientMessage {
     Join {
         /// Display name of the player.
         name: String,
+        /// Client metadata for diagnostics and compatibility.
+        client: ClientInfo,
     },
     /// Request to be placed into the matchmaking queue.
     StartMatchmaking,
@@ -70,6 +90,11 @@ pub enum ClientMessage {
         game_id: String,
         /// Chat message body.
         message: String,
+    },
+    /// Gracefully disconnect from the websocket session.
+    Disconnect {
+        /// Optional human-readable reason.
+        reason: Option<String>,
     },
 }
 
