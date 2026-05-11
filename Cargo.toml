@@ -2,6 +2,7 @@
 name = "antarian-chess-rs"
 version = "0.1.3"
 edition = "2024"
+default-run = "antarian-chess-rs"
 
 [workspace]
 members = ["crates/bot", "crates/engine", "crates/server"]
