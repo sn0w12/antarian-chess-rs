@@ -5,12 +5,13 @@ mod components;
 mod theme;
 
 use chess_engine::Color;
-use chess_server::protocol::{ClientMessage, ServerMessage};
+use chess_server::protocol::{ClientMessage, LobbySummary, ServerMessage};
 use futures_util::{SinkExt, StreamExt};
 use gpui::{
     App, AppContext, AsyncApp, Bounds, Context, Entity, FocusHandle, Focusable, InteractiveElement,
     IntoElement, ParentElement, Pixels, Render, SharedString, Size, Styled, Subscription,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, div, px,
+    TitlebarOptions, UniformListScrollHandle, Window, WindowBounds, WindowOptions, div, px,
+    uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable, Root, Sizable, TitleBar,
@@ -18,12 +19,15 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
+    scroll::Scrollbar,
+    separator::Separator,
     slider::{Slider, SliderEvent, SliderState},
     v_flex,
 };
 use gpui_component_assets::Assets;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::ops::Range;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async;
@@ -88,8 +92,18 @@ fn save_settings(settings: &Settings) {
 #[derive(Clone, Debug, PartialEq)]
 enum View {
     Menu,
-    Matchmaking,
+    OnlineWaiting,
+    LobbyBrowser,
     Playing,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum OnlineIntent {
+    RandomMatchmaking,
+    BrowseLobbies,
+    CreatePublicLobby,
+    CreatePrivateLobby,
+    JoinLobby(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +121,12 @@ struct ChessApp {
     online_tx: Option<mpsc::UnboundedSender<String>>,
 
     name_input: Entity<InputState>,
+    lobby_code_input: Entity<InputState>,
+    online_intent: Option<OnlineIntent>,
+    online_status: String,
+    active_lobby_code: Option<String>,
+    public_lobbies: Vec<LobbySummary>,
+    public_lobbies_scroll_handle: UniformListScrollHandle,
 }
 
 impl ChessApp {
@@ -123,6 +143,7 @@ impl ChessApp {
                 .placeholder("Your name")
                 .default_value(settings.player_name.as_str())
         });
+        let lobby_code_input = cx.new(|cx| InputState::new(window, cx).placeholder("Lobby code"));
 
         let volume_slider = cx.new(|_cx| {
             SliderState::new()
@@ -165,6 +186,12 @@ impl ChessApp {
             _name_subscription: name_subscription,
             online_tx: None,
             name_input,
+            lobby_code_input,
+            online_intent: None,
+            online_status: String::new(),
+            active_lobby_code: None,
+            public_lobbies: Vec::new(),
+            public_lobbies_scroll_handle: UniformListScrollHandle::new(),
         }
     }
 
@@ -177,10 +204,23 @@ impl ChessApp {
         cx.notify();
     }
 
-    fn connect_online(&mut self, cx: &mut Context<Self>) {
+    fn connect_online(&mut self, intent: OnlineIntent, cx: &mut Context<Self>) {
         let name = self.name_input.read(cx).value().to_string();
+        self.online_intent = Some(intent.clone());
+        self.active_lobby_code = None;
+        self.public_lobbies.clear();
+        self.online_status = match &intent {
+            OnlineIntent::RandomMatchmaking => "Connecting to matchmaking...".into(),
+            OnlineIntent::BrowseLobbies => "Loading public lobbies...".into(),
+            OnlineIntent::CreatePublicLobby => "Creating public lobby...".into(),
+            OnlineIntent::CreatePrivateLobby => "Creating private lobby...".into(),
+            OnlineIntent::JoinLobby(code) => format!("Joining lobby {}...", code.to_uppercase()),
+        };
 
-        self.view = View::Matchmaking;
+        self.view = match intent {
+            OnlineIntent::BrowseLobbies => View::LobbyBrowser,
+            _ => View::OnlineWaiting,
+        };
         cx.notify();
 
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
@@ -198,6 +238,10 @@ impl ChessApp {
                             if let Some(entity) = weak.upgrade() {
                                 let _ = entity.update(app, |this, cx| {
                                     this.online_tx = None;
+                                    this.online_intent = None;
+                                    this.active_lobby_code = None;
+                                    this.public_lobbies.clear();
+                                    this.online_status = "Failed to connect to server.".into();
                                     this.view = View::Menu;
                                     cx.notify();
                                 });
@@ -215,6 +259,10 @@ impl ChessApp {
                         if let Some(entity) = weak.upgrade() {
                             let _ = entity.update(app, |this, cx| {
                                 this.online_tx = None;
+                                this.online_intent = None;
+                                this.active_lobby_code = None;
+                                this.public_lobbies.clear();
+                                this.online_status = "Failed to join server.".into();
                                 this.view = View::Menu;
                                 cx.notify();
                             });
@@ -259,7 +307,10 @@ impl ChessApp {
                     if let Some(entity) = weak.upgrade() {
                         let _ = entity.update(app, |this, cx| {
                             this.online_tx = None;
-                            if this.view == View::Matchmaking {
+                            this.online_intent = None;
+                            this.active_lobby_code = None;
+                            this.public_lobbies.clear();
+                            if matches!(this.view, View::OnlineWaiting | View::LobbyBrowser) {
                                 this.view = View::Menu;
                             }
                             cx.notify();
@@ -275,26 +326,110 @@ impl ChessApp {
 
     fn cancel_matchmaking(&mut self, cx: &mut Context<Self>) {
         if let Some(tx) = &self.online_tx {
-            if let Ok(payload) = serde_json::to_string(&ClientMessage::LeaveMatchmaking) {
+            let leave_msg = match self.online_intent.as_ref() {
+                Some(OnlineIntent::RandomMatchmaking) => Some(ClientMessage::LeaveMatchmaking),
+                Some(OnlineIntent::CreatePublicLobby | OnlineIntent::CreatePrivateLobby) => {
+                    Some(ClientMessage::LeaveLobby)
+                }
+                _ => None,
+            };
+            if let Some(msg) = leave_msg
+                && let Ok(payload) = serde_json::to_string(&msg)
+            {
                 let _ = tx.send(payload);
             }
         }
         self.online_tx = None;
+        self.online_intent = None;
+        self.active_lobby_code = None;
+        self.public_lobbies.clear();
+        self.online_status.clear();
         self.view = View::Menu;
         cx.notify();
+    }
+
+    fn join_lobby_from_current_session(&mut self, lobby_code: String, cx: &mut Context<Self>) {
+        let normalized = lobby_code.trim().to_uppercase();
+        if normalized.is_empty() {
+            self.online_status = "Lobby code is required.".into();
+            cx.notify();
+            return;
+        }
+
+        if let Some(tx) = &self.online_tx
+            && let Ok(payload) = serde_json::to_string(&ClientMessage::JoinLobby {
+                lobby_code: normalized.clone(),
+            })
+        {
+            let _ = tx.send(payload);
+            self.online_status = format!("Joining lobby {normalized}...");
+            cx.notify();
+            return;
+        }
+
+        self.connect_online(OnlineIntent::JoinLobby(normalized), cx);
     }
 
     fn handle_server_message(&mut self, msg: ServerMessage, cx: &mut Context<Self>) {
         match msg {
             ServerMessage::Joined { .. } => {
-                if let Some(tx) = &self.online_tx {
-                    if let Ok(payload) = serde_json::to_string(&ClientMessage::StartMatchmaking) {
+                if let (Some(tx), Some(intent)) = (&self.online_tx, &self.online_intent) {
+                    let next = match intent {
+                        OnlineIntent::RandomMatchmaking => ClientMessage::StartMatchmaking,
+                        OnlineIntent::BrowseLobbies => ClientMessage::RequestLobbyList,
+                        OnlineIntent::CreatePublicLobby => ClientMessage::CreateLobby {
+                            private_lobby: false,
+                        },
+                        OnlineIntent::CreatePrivateLobby => ClientMessage::CreateLobby {
+                            private_lobby: true,
+                        },
+                        OnlineIntent::JoinLobby(code) => ClientMessage::JoinLobby {
+                            lobby_code: code.clone(),
+                        },
+                    };
+                    if let Ok(payload) = serde_json::to_string(&next) {
                         let _ = tx.send(payload);
                     }
                 }
             }
-            ServerMessage::MatchmakingStarted => {}
+            ServerMessage::MatchmakingStarted => {
+                self.online_status = "Looking for a random opponent...".into();
+                cx.notify();
+            }
             ServerMessage::MatchmakingLeft => {
+                self.online_intent = None;
+                self.active_lobby_code = None;
+                self.public_lobbies.clear();
+                self.online_status.clear();
+                self.view = View::Menu;
+                cx.notify();
+            }
+            ServerMessage::LobbyList { lobbies } => {
+                self.public_lobbies = lobbies;
+                self.online_status = if self.public_lobbies.is_empty() {
+                    "No public lobbies yet.".into()
+                } else {
+                    "Select a public lobby to join.".into()
+                };
+                cx.notify();
+            }
+            ServerMessage::LobbyCreated {
+                lobby_code,
+                private_lobby,
+            } => {
+                self.active_lobby_code = Some(lobby_code.clone());
+                self.online_status = if private_lobby {
+                    "Private lobby created. Share the code below.".into()
+                } else {
+                    "Public lobby created. Waiting for another player.".into()
+                };
+                cx.notify();
+            }
+            ServerMessage::LobbyLeft => {
+                self.online_intent = None;
+                self.active_lobby_code = None;
+                self.public_lobbies.clear();
+                self.online_status.clear();
                 self.view = View::Menu;
                 cx.notify();
             }
@@ -315,6 +450,10 @@ impl ChessApp {
                     board.online_tx = tx;
                     board.start_timer(cx);
                 });
+                self.active_lobby_code = None;
+                self.online_intent = None;
+                self.public_lobbies.clear();
+                self.online_status.clear();
                 self.view = View::Playing;
                 cx.notify();
             }
@@ -410,14 +549,19 @@ impl ChessApp {
                 });
             }
             ServerMessage::Error { message } => {
-                self.board.update(cx, |board, cx| {
-                    if board.game_mode == GameMode::Online {
-                        board.push_system_chat_message(format!("Server error: {message}"));
-                    } else {
-                        board.status_message = format!("Server error: {message}");
-                    }
+                if self.view == View::OnlineWaiting {
+                    self.online_status = format!("Server error: {message}");
                     cx.notify();
-                });
+                } else {
+                    self.board.update(cx, |board, cx| {
+                        if board.game_mode == GameMode::Online {
+                            board.push_system_chat_message(format!("Server error: {message}"));
+                        } else {
+                            board.status_message = format!("Server error: {message}");
+                        }
+                        cx.notify();
+                    });
+                }
             }
         }
     }
@@ -453,7 +597,8 @@ impl Render for ChessApp {
 
         let content: gpui::AnyElement = match self.view {
             View::Menu => menu_view(self, window, cx),
-            View::Matchmaking => matchmaking_view(self, cx),
+            View::OnlineWaiting => matchmaking_view(self, cx),
+            View::LobbyBrowser => lobby_browser_view(self, cx),
             View::Playing => game_view(self, window, cx),
         };
 
@@ -490,22 +635,34 @@ fn menu_view(
         .size_full()
         .child(
             v_flex()
-                .items_center()
-                .gap_2()
+                .w(px(440.))
+                .gap_4()
+                .p_4()
+                .rounded_lg()
+                .bg(t.muted.opacity(0.12))
                 .child(
-                    Label::new("Antarian Chess")
-                        .text_color(t.foreground)
-                        .font_family(t.font_family.clone()),
+                    v_flex()
+                        .w_full()
+                        .gap_1()
+                        .child(
+                            Label::new("Antarian Chess")
+                                .text_color(t.foreground)
+                                .font_family(t.font_family.clone()),
+                        )
+                        .child(Label::new("Play local, queue randomly, or host your own match.").text_color(t.muted_foreground)),
                 )
                 .child(
-                    h_flex()
+                    v_flex()
+                        .w_full()
                         .gap_2()
-                        .items_center()
-                        .child(Input::new(&app.name_input).w(px(200.))),
+                        .child(Label::new("Player Name").text_color(t.muted_foreground))
+                        .child(Input::new(&app.name_input).w_full()),
                 )
                 .child(
-                    h_flex()
+                    v_flex()
+                        .w_full()
                         .gap_2()
+                        .child(Label::new("Solo").text_color(t.muted_foreground))
                         .child({
                             Button::new("bot-btn").large().label("vs Bot").on_click({
                                 let weak = weak.clone();
@@ -515,17 +672,67 @@ fn menu_view(
                                     });
                                 }
                             })
-                        })
+                            .w_full()
+                        }),
+                )
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .child(Separator::horizontal().w_full())
+                        .child(Label::new("Online").text_color(t.muted_foreground))
                         .child({
                             let weak = weak.clone();
-                            Button::new("online-btn")
+                            Button::new("online-random-btn")
                                 .large()
-                                .label("Online")
+                                .label("Random Online")
+                                .w_full()
                                 .disabled(name_empty)
                                 .on_click(move |_, _window, cx| {
                                     let _ = weak.update(cx, |this, cx| {
-                                        this.connect_online(cx);
+                                        this.connect_online(OnlineIntent::RandomMatchmaking, cx);
                                     });
+                                })
+                        })
+                        .child({
+                            let weak = weak.clone();
+                            Button::new("browse-lobbies-btn")
+                                .label("Browse Public Lobbies")
+                                .w_full()
+                                .disabled(name_empty)
+                                .on_click(move |_, _window, cx| {
+                                    let _ = weak.update(cx, |this, cx| {
+                                        this.connect_online(OnlineIntent::BrowseLobbies, cx);
+                                    });
+                                })
+                        })
+                        .child({
+                            h_flex()
+                                .w_full()
+                                .gap_2()
+                                .child({
+                                    let weak = weak.clone();
+                                    Button::new("create-public-lobby-btn")
+                                        .label("Create Public Lobby")
+                                        .flex_1()
+                                        .disabled(name_empty)
+                                        .on_click(move |_, _window, cx| {
+                                            let _ = weak.update(cx, |this, cx| {
+                                                this.connect_online(OnlineIntent::CreatePublicLobby, cx);
+                                            });
+                                        })
+                                })
+                                .child({
+                                    let weak = weak.clone();
+                                    Button::new("create-private-lobby-btn")
+                                        .label("Create Private Lobby")
+                                        .flex_1()
+                                        .disabled(name_empty)
+                                        .on_click(move |_, _window, cx| {
+                                            let _ = weak.update(cx, |this, cx| {
+                                                this.connect_online(OnlineIntent::CreatePrivateLobby, cx);
+                                            });
+                                        })
                                 })
                         }),
                 )
@@ -534,10 +741,147 @@ fn menu_view(
         .into_any_element()
 }
 
+fn lobby_browser_view(app: &mut ChessApp, cx: &mut Context<ChessApp>) -> gpui::AnyElement {
+    let weak = cx.weak_entity();
+    let private_code_empty = app.lobby_code_input.read(cx).value().trim().is_empty();
+
+    v_flex()
+        .items_center()
+        .justify_center()
+        .size_full()
+        .child(
+            v_flex()
+                .w(px(460.))
+                .h(px(520.))
+                .gap_3()
+                .p_4()
+                .rounded_lg()
+                .bg(cx.theme().muted.opacity(0.12))
+                .child(Label::new("Public Lobbies").text_color(cx.theme().foreground))
+                .child(Label::new(app.online_status.clone()).text_color(cx.theme().muted_foreground))
+                .child(
+                    div()
+                        .relative()
+                        .w_full()
+                        .flex_1()
+                        .rounded_md()
+                        .bg(cx.theme().muted.opacity(0.10))
+                        .overflow_hidden()
+                        .child(if app.public_lobbies.is_empty() {
+                            v_flex()
+                                .size_full()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    Label::new("No public lobbies available right now.")
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                                .into_any_element()
+                        } else {
+                            uniform_list(
+                                "public-lobby-list",
+                                app.public_lobbies.len(),
+                                cx.processor(|this, range: Range<usize>, _window, cx| {
+                                    range
+                                        .map(|ix| render_public_lobby_row(this, ix, cx))
+                                        .collect::<Vec<_>>()
+                                }),
+                            )
+                            .track_scroll(&app.public_lobbies_scroll_handle)
+                            .size_full()
+                            .into_any_element()
+                        })
+                        .child(Scrollbar::vertical(&app.public_lobbies_scroll_handle)),
+                )
+                .child(Separator::horizontal().w_full())
+                .child(Label::new("Private Lobby Code").text_color(cx.theme().muted_foreground))
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .items_center()
+                        .child(Input::new(&app.lobby_code_input).flex_1())
+                        .child({
+                            let join_weak = weak.clone();
+                            Button::new("join-private-lobby-btn")
+                                .label("Join Private")
+                                .w(px(128.))
+                                .disabled(private_code_empty)
+                                .on_click(move |_, _window, cx| {
+                                    let _ = join_weak.update(cx, |this, cx| {
+                                        let code =
+                                            this.lobby_code_input.read(cx).value().trim().to_string();
+                                        this.join_lobby_from_current_session(code, cx);
+                                    });
+                                })
+                        }),
+                )
+                .child(
+                    Button::new("cancel-lobby-browser-btn")
+                        .w_full()
+                        .label("Back")
+                        .on_click(move |_, _window, cx| {
+                            let _ = weak.update(cx, |this, cx| {
+                                this.cancel_matchmaking(cx);
+                            });
+                        }),
+                ),
+        )
+        .into_any_element()
+}
+
+fn render_public_lobby_row(
+    app: &mut ChessApp,
+    ix: usize,
+    cx: &mut Context<ChessApp>,
+) -> gpui::AnyElement {
+    let Some(lobby) = app.public_lobbies.get(ix).cloned() else {
+        return div().into_any_element();
+    };
+
+    let weak = cx.weak_entity();
+    let code = lobby.lobby_code.clone();
+    let lobby_code_label = lobby.lobby_code.clone();
+
+    h_flex()
+        .w_full()
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .p_2()
+        .rounded_md()
+        .hover(|style| style.bg(cx.theme().muted.opacity(0.18)))
+        .child(
+            v_flex()
+                .gap_1()
+                .child(Label::new(lobby.host_name).text_color(cx.theme().foreground))
+                .child(Label::new(lobby_code_label).text_color(cx.theme().muted_foreground)),
+        )
+        .child(
+            Button::new(format!("join-public-{}", lobby.lobby_code))
+                .label("Join")
+                .on_click(move |_, _window, cx| {
+                    let _ = weak.update(cx, |this, cx| {
+                        this.join_lobby_from_current_session(code.clone(), cx);
+                    });
+                }),
+        )
+        .into_any_element()
+}
+
 // ===================== Matchmaking screen =====================
 
-fn matchmaking_view(_app: &mut ChessApp, cx: &mut Context<ChessApp>) -> gpui::AnyElement {
+fn matchmaking_view(app: &mut ChessApp, cx: &mut Context<ChessApp>) -> gpui::AnyElement {
     let weak = cx.weak_entity();
+    let title = match app.online_intent.as_ref() {
+        Some(OnlineIntent::RandomMatchmaking) => "Random Matchmaking",
+        Some(OnlineIntent::CreatePublicLobby) => "Public Lobby",
+        Some(OnlineIntent::CreatePrivateLobby) => "Private Lobby",
+        Some(OnlineIntent::BrowseLobbies) => "Public Lobby Browser",
+        Some(OnlineIntent::JoinLobby(_)) => "Join Lobby",
+        None => "Online",
+    };
+    let detail = app.online_status.clone();
 
     v_flex()
         .items_center()
@@ -546,8 +890,18 @@ fn matchmaking_view(_app: &mut ChessApp, cx: &mut Context<ChessApp>) -> gpui::An
         .child(
             v_flex()
                 .items_center()
+                .w(px(320.))
                 .gap_2()
-                .child(Label::new("Matchmaking...").text_color(cx.theme().foreground))
+                .child(Label::new(title).text_color(cx.theme().foreground))
+                .child(Label::new(detail).text_color(cx.theme().muted_foreground))
+                .children(app.active_lobby_code.as_ref().map(|code| {
+                    v_flex()
+                        .items_center()
+                        .gap_1()
+                        .child(Label::new("Lobby Code").text_color(cx.theme().muted_foreground))
+                        .child(Label::new(code.clone()).text_color(cx.theme().foreground))
+                        .into_any_element()
+                }))
                 .child(Button::new("cancel-mm-btn").label("Cancel").on_click(
                     move |_, _window, cx| {
                         let _ = weak.update(cx, |this, cx| {
@@ -562,7 +916,7 @@ fn matchmaking_view(_app: &mut ChessApp, cx: &mut Context<ChessApp>) -> gpui::An
 fn volume_bar(slider: &Entity<SliderState>, vol: f32, cx: &Context<ChessApp>) -> gpui::AnyElement {
     let pct = (vol * 100.0).round() as u32;
     v_flex()
-        .w_32()
+        .w_full()
         .items_center()
         .gap_2()
         .child(Label::new(format!("Volume: {pct}%")).text_color(cx.theme().muted_foreground))

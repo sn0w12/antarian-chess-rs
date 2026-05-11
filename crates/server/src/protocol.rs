@@ -1,5 +1,13 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LobbySummary {
+    /// Stable lobby code used internally and for private invites.
+    pub lobby_code: String,
+    /// Host display name.
+    pub host_name: String,
+}
+
 /// Every message a client sends to the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
@@ -13,6 +21,20 @@ pub enum ClientMessage {
     StartMatchmaking,
     /// Request to leave the matchmaking queue.
     LeaveMatchmaking,
+    /// Subscribe to and fetch the current public lobby list.
+    RequestLobbyList,
+    /// Create a lobby. Public lobbies appear in the browser; private ones require a code.
+    CreateLobby {
+        /// Whether the lobby should be private.
+        private_lobby: bool,
+    },
+    /// Leave a private lobby that was previously created.
+    LeaveLobby,
+    /// Join a lobby by code. Public lobbies use the same code internally.
+    JoinLobby {
+        /// The case-insensitive lobby code.
+        lobby_code: String,
+    },
     /// Make a move in an active game.
     MakeMove {
         /// The game this move belongs to.
@@ -64,6 +86,20 @@ pub enum ServerMessage {
     MatchmakingStarted,
     /// Confirmation that the client left the matchmaking queue.
     MatchmakingLeft,
+    /// Current list of public lobbies available to join.
+    LobbyList {
+        /// Public lobbies currently open.
+        lobbies: Vec<LobbySummary>,
+    },
+    /// Confirmation that a lobby was created.
+    LobbyCreated {
+        /// The short lobby code other players can join.
+        lobby_code: String,
+        /// Whether the lobby is private.
+        private_lobby: bool,
+    },
+    /// Confirmation that a lobby was left.
+    LobbyLeft,
     /// The server found an opponent and created a game.
     MatchFound {
         /// Unique id for the newly created game.

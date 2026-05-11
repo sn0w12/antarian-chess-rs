@@ -1,4 +1,4 @@
-use crate::protocol::{ClientMessage, ServerMessage};
+use crate::protocol::{ClientMessage, LobbySummary, ServerMessage};
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,11 +14,14 @@ use uuid::Uuid;
 
 type PlayerId = String;
 type GameId = String;
+type LobbyCode = String;
 
 #[derive(Debug, Clone, PartialEq)]
 enum PlayerState {
     Idle,
+    BrowsingLobbies,
     InMatchmaking,
+    InLobby(LobbyCode),
     InGame(GameId),
     GameOver(GameId),
 }
@@ -38,6 +41,11 @@ struct Game {
     rematch_requester: Option<PlayerId>,
 }
 
+struct Lobby {
+    host_id: PlayerId,
+    private_lobby: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Shared server state
 // ---------------------------------------------------------------------------
@@ -45,6 +53,7 @@ struct Game {
 struct ServerInner {
     players: HashMap<PlayerId, Player>,
     matchmaking: Vec<PlayerId>,
+    lobbies: HashMap<LobbyCode, Lobby>,
     games: HashMap<GameId, Game>,
 }
 
@@ -65,6 +74,7 @@ impl GameServer {
             inner: Arc::new(RwLock::new(ServerInner {
                 players: HashMap::new(),
                 matchmaking: Vec::new(),
+                lobbies: HashMap::new(),
                 games: HashMap::new(),
             })),
         }
@@ -97,6 +107,16 @@ impl GameServer {
 
         // Remove from matchmaking queue
         inner.matchmaking.retain(|p| p != player_id);
+
+        // Remove hosted lobby if present
+        let lobby_to_remove = inner.players.get(player_id).and_then(|player| match &player.state {
+            PlayerState::InLobby(code) => Some(code.clone()),
+            _ => None,
+        });
+        if let Some(code) = lobby_to_remove {
+            inner.lobbies.remove(&code);
+            self.broadcast_public_lobby_list_inner(&inner);
+        }
 
         // Gather info about what game the player was in before the player is removed
         let game_info: Vec<(GameId, PlayerId, bool)> = {
@@ -164,7 +184,7 @@ impl GameServer {
         let can_queue = inner
             .players
             .get(player_id)
-            .map(|p| p.state == PlayerState::Idle)
+            .map(|p| matches!(p.state, PlayerState::Idle | PlayerState::BrowsingLobbies))
             .unwrap_or(false);
 
         if !can_queue {
@@ -196,6 +216,178 @@ impl GameServer {
             && p.state == PlayerState::InMatchmaking
         {
             p.state = PlayerState::Idle;
+        }
+    }
+
+    pub async fn request_lobby_list(&self, player_id: &str) -> bool {
+        let mut inner = self.inner.write().await;
+        let can_browse = inner
+            .players
+            .get(player_id)
+            .map(|p| matches!(p.state, PlayerState::Idle | PlayerState::BrowsingLobbies))
+            .unwrap_or(false);
+        if !can_browse {
+            return false;
+        }
+        if let Some(player) = inner.players.get_mut(player_id) {
+            player.state = PlayerState::BrowsingLobbies;
+        }
+        self.send_public_lobby_list_to_player_inner(&inner, player_id);
+        true
+    }
+
+    pub async fn create_lobby(
+        &self,
+        player_id: &str,
+        private_lobby: bool,
+    ) -> Option<LobbyCode> {
+        let mut inner = self.inner.write().await;
+
+        let can_create = inner
+            .players
+            .get(player_id)
+            .map(|p| matches!(p.state, PlayerState::Idle | PlayerState::BrowsingLobbies))
+            .unwrap_or(false);
+        if !can_create {
+            return None;
+        }
+
+        let code = loop {
+            let candidate = Uuid::new_v4()
+                .simple()
+                .to_string()
+                .chars()
+                .take(6)
+                .collect::<String>()
+                .to_uppercase();
+            if !inner.lobbies.contains_key(&candidate) {
+                break candidate;
+            }
+        };
+
+        inner.lobbies.insert(
+            code.clone(),
+            Lobby {
+                host_id: player_id.to_string(),
+                private_lobby,
+            },
+        );
+
+        if let Some(player) = inner.players.get_mut(player_id) {
+            player.state = PlayerState::InLobby(code.clone());
+        }
+
+        if !private_lobby {
+            self.broadcast_public_lobby_list_inner(&inner);
+        }
+
+        Some(code)
+    }
+
+    pub async fn leave_lobby(&self, player_id: &str) -> bool {
+        let mut inner = self.inner.write().await;
+
+        let lobby_code = match inner.players.get(player_id).map(|p| p.state.clone()) {
+            Some(PlayerState::InLobby(code)) => code,
+            _ => return false,
+        };
+
+        let was_public = inner
+            .lobbies
+            .get(&lobby_code)
+            .map(|lobby| !lobby.private_lobby)
+            .unwrap_or(false);
+        inner.lobbies.remove(&lobby_code);
+        if let Some(player) = inner.players.get_mut(player_id) {
+            player.state = PlayerState::Idle;
+        }
+        if was_public {
+            self.broadcast_public_lobby_list_inner(&inner);
+        }
+        true
+    }
+
+    pub async fn join_lobby(&self, player_id: &str, lobby_code: &str) -> Result<(), String> {
+        let mut inner = self.inner.write().await;
+
+        let can_join = inner
+            .players
+            .get(player_id)
+            .map(|p| matches!(p.state, PlayerState::Idle | PlayerState::BrowsingLobbies))
+            .unwrap_or(false);
+        if !can_join {
+            return Err("you are not available to join a lobby".into());
+        }
+
+        let normalized_code = lobby_code.trim().to_uppercase();
+        if normalized_code.is_empty() {
+            return Err("lobby code is required".into());
+        }
+
+        let (host_id, was_public) = match inner.lobbies.get(&normalized_code) {
+            Some(lobby) => (lobby.host_id.clone(), !lobby.private_lobby),
+            None => return Err("lobby not found".into()),
+        };
+
+        if host_id == player_id {
+            return Err("you cannot join your own lobby".into());
+        }
+
+        let host_ready = inner
+            .players
+            .get(&host_id)
+            .map(|p| p.state == PlayerState::InLobby(normalized_code.clone()))
+            .unwrap_or(false);
+        if !host_ready {
+            inner.lobbies.remove(&normalized_code);
+            if was_public {
+                self.broadcast_public_lobby_list_inner(&inner);
+            }
+            return Err("lobby is no longer available".into());
+        }
+
+        inner.lobbies.remove(&normalized_code);
+        if was_public {
+            self.broadcast_public_lobby_list_inner(&inner);
+        }
+        self.create_game_inner(&mut inner, &host_id, player_id);
+        Ok(())
+    }
+
+    fn public_lobby_summaries_inner(&self, inner: &ServerInner) -> Vec<LobbySummary> {
+        inner
+            .lobbies
+            .iter()
+            .filter_map(|(code, lobby)| {
+                if lobby.private_lobby {
+                    return None;
+                }
+                let host_name = inner.players.get(&lobby.host_id)?.name.clone();
+                Some(LobbySummary {
+                    lobby_code: code.clone(),
+                    host_name,
+                })
+            })
+            .collect()
+    }
+
+    fn send_public_lobby_list_to_player_inner(&self, inner: &ServerInner, player_id: &str) {
+        let lobbies = self.public_lobby_summaries_inner(inner);
+        if let Some(player) = inner.players.get(player_id) {
+            let _ = player.tx.send(ServerMessage::LobbyList { lobbies });
+        }
+    }
+
+    fn broadcast_public_lobby_list_inner(&self, inner: &ServerInner) {
+        let lobbies = self.public_lobby_summaries_inner(inner);
+        for (player_id, player) in &inner.players {
+            if matches!(player.state, PlayerState::BrowsingLobbies)
+                && !matches!(inner.players.get(player_id).map(|p| &p.state), Some(PlayerState::InLobby(_)))
+            {
+                let _ = player.tx.send(ServerMessage::LobbyList {
+                    lobbies: lobbies.clone(),
+                });
+            }
         }
     }
 
@@ -599,6 +791,50 @@ pub async fn handle_connection(stream: TcpStream, server: GameServer) {
                 if let Some(pid) = &player_id {
                     server.leave_matchmaking(pid).await;
                     let _ = tx.send(ServerMessage::MatchmakingLeft);
+                }
+            }
+
+            ClientMessage::RequestLobbyList => {
+                if let Some(pid) = &player_id
+                    && !server.request_lobby_list(pid).await
+                {
+                    let _ = tx.send(ServerMessage::Error {
+                        message: "unable to browse lobbies right now".into(),
+                    });
+                }
+            }
+
+            ClientMessage::CreateLobby { private_lobby } => {
+                if let Some(pid) = &player_id {
+                    match server.create_lobby(pid, private_lobby).await {
+                        Some(lobby_code) => {
+                            let _ = tx.send(ServerMessage::LobbyCreated {
+                                lobby_code,
+                                private_lobby,
+                            });
+                        }
+                        None => {
+                            let _ = tx.send(ServerMessage::Error {
+                                message: "unable to create lobby right now".into(),
+                            });
+                        }
+                    }
+                }
+            }
+
+            ClientMessage::LeaveLobby => {
+                if let Some(pid) = &player_id
+                    && server.leave_lobby(pid).await
+                {
+                    let _ = tx.send(ServerMessage::LobbyLeft);
+                }
+            }
+
+            ClientMessage::JoinLobby { lobby_code } => {
+                if let Some(pid) = &player_id
+                    && let Err(message) = server.join_lobby(pid, &lobby_code).await
+                {
+                    let _ = tx.send(ServerMessage::Error { message });
                 }
             }
 
