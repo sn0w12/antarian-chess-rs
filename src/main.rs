@@ -3,6 +3,8 @@
 mod audio;
 mod components;
 mod theme;
+mod startup;
+mod dialogs;
 
 use machine_uid::get as machine_uid;
 use chess_engine::Color;
@@ -29,7 +31,7 @@ use gpui_component::{
 };
 use gpui_component_assets::Assets;
 use serde::{Deserialize, Serialize};
-use std::ops::Range;
+use std::{ops::Range, path::Path};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -156,6 +158,7 @@ struct ChessApp {
 
 impl ChessApp {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let window_handle = window.window_handle();
         let settings = load_settings();
 
         let focus_handle = cx.focus_handle();
@@ -201,6 +204,33 @@ impl ChessApp {
                 });
             },
         );
+
+        {
+            cx.defer(move |cx| {
+                if startup::install::should_prompt_for_install() {
+                    let _ = cx.update_window(window_handle, |_, window, app| {
+                        ChessApp::show_install_prompt(window, app);
+                    });
+                }
+            });
+
+            #[cfg(feature = "auto_update")]
+            {
+                let bg = cx.background_executor().clone();
+                let update_check = bg.spawn(async move { startup::update::has_update() });
+                cx.spawn(async move |_, async_app: &mut AsyncApp| {
+                    let result = update_check.await;
+                    if let Ok(version) = result {
+                        async_app.update(|cx: &mut App| {
+                            let _ = cx.update_window(window_handle, |_, window, app| {
+                                ChessApp::show_update_prompt(window, app, version.clone());
+                            });
+                        });
+                    }
+                })
+                .detach();
+            }
+        }
 
         Self {
             focus_handle,
@@ -1042,6 +1072,12 @@ fn game_view(
 // ===================== Entry point =====================
 
 fn main() {
+    if let Some(original_path) = parse_delete_old_arg()
+        && let Err(e) = delete_original_binary(&original_path)
+    {
+        eprintln!("Failed to delete old binary: {}", e);
+    }
+
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let _guard = rt.enter();
 
@@ -1078,4 +1114,44 @@ fn main() {
     drop(_guard);
     rt.shutdown_timeout(Duration::from_secs(2));
     std::process::exit(0);
+}
+
+/// Parse `--delete-old="..."` from command line and return the path.
+fn parse_delete_old_arg() -> Option<PathBuf> {
+    for arg in std::env::args() {
+        if let Some(stripped) = arg.strip_prefix("--delete-old=\"") {
+            if let Some(path) = stripped.strip_suffix('"') {
+                return Some(PathBuf::from(path));
+            }
+        } else if let Some(stripped) = arg.strip_prefix("--delete-old=") {
+            // Without quotes (unlikely, but handle)
+            return Some(PathBuf::from(stripped));
+        }
+    }
+    None
+}
+
+/// Delete the original binary file.
+/// On Windows, retry a few times because the parent process might still hold a handle.
+/// On Unix, just remove it.
+fn delete_original_binary(path: &Path) -> anyhow::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    // On Windows, the original process may have just exited; give it a moment.
+    #[cfg(windows)]
+    {
+        for attempt in 0..5 {
+            if std::fs::remove_file(path).is_ok() {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100 * attempt));
+        }
+        anyhow::bail!("Failed to delete {} after 5 attempts", path.display());
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
 }
