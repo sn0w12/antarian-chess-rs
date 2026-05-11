@@ -3,9 +3,7 @@ use chess_bot::find_best_move;
 use chess_engine::*;
 use chess_server::protocol::ClientMessage;
 use gpui::{
-    AnyElement, AppContext, AsyncApp, AvailableSpace, Context, Entity, Hsla, Image, ImageFormat,
-    IntoElement, ObjectFit, ParentElement, Pixels, Render, ScrollStrategy, SharedString, Size, Styled,
-    StyledImage, Window, WeakEntity, div, hsla, img, px, size,
+    AnyElement, AppContext, AsyncApp, AvailableSpace, Context, Entity, Hsla, Image, ImageFormat, IntoElement, ObjectFit, ParentElement, Pixels, Render, ScrollStrategy, SharedString, Size, Styled, StyledImage, WeakEntity, Window, div, hsla, img, prelude::FluentBuilder, px, size
 };
 use gpui_component::{
     ActiveTheme, VirtualListScrollHandle, button::Button, h_flex, label::Label,
@@ -729,7 +727,9 @@ fn sidebar(this: &ChessBoard, _window: &mut Window, cx: &mut Context<ChessBoard>
         .child(Separator::horizontal().w_full())
         .child(clock_row("White", &white_time, Color::White, this, t))
         .child(clock_row("Black", &black_time, Color::Black, this, t))
-        .child(Separator::horizontal().w_full())
+        .when(this.game_mode == GameMode::Online, |e | {
+            e.child(Separator::horizontal().w_full())
+        })
         .children((this.game_mode == GameMode::Online).then(|| {
             v_flex()
                 .w_full()
@@ -821,10 +821,13 @@ fn sidebar(this: &ChessBoard, _window: &mut Window, cx: &mut Context<ChessBoard>
                 .flex_wrap()
                 .children(this.captured_us.iter().map(|k| {
                     div()
-                        .p_2()
                         .rounded_sm()
                         .bg(t.primary.opacity(0.15))
-                        .child(abbr(*k))
+                        .child(captured_piece_icon(
+                            *k,
+                            this.player_color.opposite(),
+                            t.primary.opacity(0.15),
+                        ))
                 })),
         )
         .child(Label::new("Theirs:").text_color(t.muted_foreground))
@@ -834,10 +837,9 @@ fn sidebar(this: &ChessBoard, _window: &mut Window, cx: &mut Context<ChessBoard>
                 .flex_wrap()
                 .children(this.captured_opp.iter().map(|k| {
                     div()
-                        .p_2()
                         .rounded_sm()
                         .bg(t.danger.opacity(0.15))
-                        .child(abbr(*k))
+                        .child(captured_piece_icon(*k, this.player_color, t.danger.opacity(0.15)))
                 })),
         )
         .into_any_element()
@@ -983,15 +985,17 @@ fn fmt_time(seconds: f64) -> String {
     format!("{:02}:{:02}", mins, secs)
 }
 
-fn abbr(k: PieceKind) -> &'static str {
-    match k {
-        PieceKind::Emperor => "K",
-        PieceKind::Empress => "Q",
-        PieceKind::Priest => "P",
-        PieceKind::Paladin => "L",
-        PieceKind::Dragon => "D",
-        PieceKind::Knight => "N",
-    }
+fn captured_piece_icon(piece: PieceKind, color: Color, bg: Hsla) -> AnyElement {
+    div()
+        .size(px(28.))
+        .rounded_sm()
+        .bg(bg)
+        .child(
+            img(piece_image(piece, color))
+                .size_full()
+                .object_fit(ObjectFit::Contain),
+        )
+        .into_any_element()
 }
 
 fn detail(t: &gpui_component::ThemeColor, label: &str, value: &str) -> AnyElement {
