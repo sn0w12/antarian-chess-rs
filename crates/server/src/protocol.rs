@@ -42,6 +42,13 @@ pub enum ClientMessage {
         /// The finished game id that the request is tied to.
         game_id: String,
     },
+    /// Send a chat message to both players in a match.
+    SendChat {
+        /// The active or recently finished game id that the chat belongs to.
+        game_id: String,
+        /// Chat message body.
+        message: String,
+    },
 }
 
 /// Every message the server sends to a client.
@@ -109,6 +116,15 @@ pub enum ServerMessage {
     OpponentDisconnected {
         /// The game that was abandoned.
         game_id: String,
+    },
+    /// A chat message in the current match.
+    ChatMessage {
+        /// The game this chat belongs to.
+        game_id: String,
+        /// Display name of the sender.
+        sender_name: String,
+        /// Chat message body.
+        message: String,
     },
     /// A generic error in response to a malformed or illegal request.
     Error {

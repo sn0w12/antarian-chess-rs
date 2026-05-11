@@ -343,7 +343,34 @@ impl ChessApp {
                     cx.notify();
                 });
             }
-            ServerMessage::Error { .. } => {}
+            ServerMessage::ChatMessage {
+                game_id,
+                sender_name,
+                message,
+            } => {
+                self.board.update(cx, |board, cx| {
+                    if board.game_id.as_deref() != Some(game_id.as_str()) {
+                        return;
+                    }
+                    let sender_name = if sender_name == board.opponent_name {
+                        sender_name
+                    } else {
+                        "You".to_string()
+                    };
+                    board.push_chat_message(sender_name, message);
+                    cx.notify();
+                });
+            }
+            ServerMessage::Error { message } => {
+                self.board.update(cx, |board, cx| {
+                    if board.game_mode == GameMode::Online {
+                        board.push_system_chat_message(format!("Server error: {message}"));
+                    } else {
+                        board.status_message = format!("Server error: {message}");
+                    }
+                    cx.notify();
+                });
+            }
             _ => {}
         }
     }

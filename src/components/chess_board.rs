@@ -3,11 +3,13 @@ use chess_bot::find_best_move;
 use chess_engine::*;
 use chess_server::protocol::ClientMessage;
 use gpui::{
-    AnyElement, AsyncApp, Context, Hsla, Image, ImageFormat, IntoElement, ObjectFit, ParentElement,
-    Render, Styled, StyledImage, WeakEntity, Window, div, hsla, img, px,
+    AnyElement, AppContext, AsyncApp, Context, Entity, Hsla, Image, ImageFormat, IntoElement,
+    ObjectFit, ParentElement, Render, Styled, StyledImage, WeakEntity, Window, div, hsla, img, px,
 };
 use gpui_component::{
     ActiveTheme, button::Button, h_flex, label::Label, separator::Separator, v_flex,
+    input::{Input, InputState},
+    scroll::ScrollableElement,
 };
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -108,6 +110,13 @@ pub enum GameMode {
     Local,
 }
 
+#[derive(Clone, Debug)]
+struct ChatEntry {
+    sender_name: String,
+    message: String,
+    is_ours: bool,
+}
+
 // ---------------------------------------------------------------------------
 // ChessBoard entity
 // ---------------------------------------------------------------------------
@@ -138,10 +147,14 @@ pub struct ChessBoard {
     pub bot_depth: Option<u32>,
 
     last_move: Option<Move>,
+    chat_messages: Vec<ChatEntry>,
+    chat_input: Entity<InputState>,
 }
 
 impl ChessBoard {
-    pub fn new(_window: &mut Window, _cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let chat_input = cx.new(|cx| InputState::new(window, cx).placeholder("Message opponent"));
+
         Self {
             game_state: Board::initial(),
             player_color: Color::White,
@@ -163,6 +176,8 @@ impl ChessBoard {
             bot_score: None,
             bot_depth: None,
             last_move: None,
+            chat_messages: Vec::new(),
+            chat_input,
         }
     }
 
@@ -186,6 +201,7 @@ impl ChessBoard {
         self.bot_score = None;
         self.bot_depth = None;
         self.last_move = None;
+        self.chat_messages.clear();
         self.refresh_status();
     }
 
@@ -433,6 +449,52 @@ impl ChessBoard {
         self.play_sound(was_capture);
         cx.notify();
     }
+
+    pub fn push_chat_message(&mut self, sender_name: String, message: String) {
+        let is_ours = sender_name == "You";
+        self.chat_messages.push(ChatEntry {
+            sender_name,
+            message,
+            is_ours,
+        });
+    }
+
+    pub fn push_system_chat_message(&mut self, message: String) {
+        self.chat_messages.push(ChatEntry {
+            sender_name: "System".to_string(),
+            message,
+            is_ours: false,
+        });
+    }
+
+    pub fn send_chat_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.game_mode != GameMode::Online {
+            return;
+        }
+
+        let Some(tx) = &self.online_tx else {
+            return;
+        };
+        let Some(game_id) = &self.game_id else {
+            return;
+        };
+
+        let message = self.chat_input.read(cx).value().trim().to_string();
+        if message.is_empty() {
+            return;
+        }
+
+        let msg = ClientMessage::SendChat {
+            game_id: game_id.clone(),
+            message,
+        };
+        if let Ok(payload) = serde_json::to_string(&msg) {
+            let _ = tx.send(payload);
+            self.chat_input.update(cx, |input, cx| {
+                input.set_value("", window, cx);
+            });
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -440,13 +502,13 @@ impl ChessBoard {
 // ---------------------------------------------------------------------------
 
 impl Render for ChessBoard {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let flip = self.player_color == Color::White;
         h_flex()
             .size_full()
             .gap_2()
             .child(board_view(self, flip, cx))
-            .child(sidebar(self, cx))
+            .child(sidebar(self, window, cx))
     }
 }
 
@@ -540,7 +602,7 @@ fn board_view(this: &ChessBoard, flip: bool, cx: &Context<ChessBoard>) -> AnyEle
         .into_any_element()
 }
 
-fn sidebar(this: &ChessBoard, cx: &Context<ChessBoard>) -> AnyElement {
+fn sidebar(this: &ChessBoard, _window: &mut Window, cx: &mut Context<ChessBoard>) -> AnyElement {
     let t = cx.theme();
     let mode = match this.game_mode {
         GameMode::Bot => "vs Bot",
@@ -591,6 +653,84 @@ fn sidebar(this: &ChessBoard, cx: &Context<ChessBoard>) -> AnyElement {
         .child(Separator::horizontal().w_full())
         .child(clock_row("White", &white_time, Color::White, this, t))
         .child(clock_row("Black", &black_time, Color::Black, this, t))
+        .child(Separator::horizontal().w_full())
+        .children((this.game_mode == GameMode::Online).then(|| {
+            v_flex()
+                .w_full()
+                .flex_1()
+                .gap_2()
+                .child(Label::new("Match Chat").text_color(t.muted_foreground))
+                .child(
+                    div()
+                        .flex_1()
+                        .max_h(px(200.))
+                        .overflow_y_scrollbar()
+                        .p_2()
+                        .rounded_md()
+                        .bg(t.muted.opacity(0.15))
+                        .child(
+                            v_flex().w_full().gap_2().children(if this.chat_messages.is_empty() {
+                                vec![
+                                    Label::new("No messages yet.")
+                                        .text_color(t.muted_foreground)
+                                        .into_any_element(),
+                                ]
+                            } else {
+                                this.chat_messages
+                                    .iter()
+                                    .map(|entry| {
+                                        let body = div()
+                                            .w_full()
+                                            .p_2()
+                                            .rounded_md()
+                                            .bg(if entry.is_ours {
+                                                t.primary.opacity(0.18)
+                                            } else {
+                                                t.muted.opacity(0.25)
+                                            })
+                                            .child(
+                                                Label::new(entry.message.clone())
+                                                    .text_color(t.foreground),
+                                            );
+
+                                        let row = v_flex()
+                                            .w_full()
+                                            .gap_1()
+                                            .child(
+                                                Label::new(entry.sender_name.clone())
+                                                    .text_color(if entry.is_ours {
+                                                        t.primary
+                                                    } else {
+                                                        t.muted_foreground
+                                                    }),
+                                            );
+
+                                        if entry.is_ours {
+                                            row.items_end().child(body).into_any_element()
+                                        } else {
+                                            row.child(body).into_any_element()
+                                        }
+                                    })
+                                    .collect()
+                            }),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .items_center()
+                        .child(Input::new(&this.chat_input).flex_1())
+                        .child(Button::new("send-chat-btn").label("Send").on_click({
+                            let weak = cx.weak_entity();
+                            move |_, window, cx| {
+                                let _ = weak.update(cx, |this, cx| {
+                                    this.send_chat_message(window, cx);
+                                });
+                            }
+                        })),
+                )
+        }))
         .child(Separator::horizontal().w_full())
         .child(Button::new("leave-btn").w_full().label("Leave").on_click({
             let weak = cx.weak_entity();

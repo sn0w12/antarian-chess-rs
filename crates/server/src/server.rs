@@ -273,6 +273,52 @@ impl GameServer {
         }
     }
 
+    /// Broadcast a validated chat message to both players in the specified game.
+    pub async fn send_chat(&self, player_id: &str, game_id: &str, message: &str) {
+        let trimmed = message.trim();
+        if trimmed.is_empty() || trimmed.len() > 280 {
+            return;
+        }
+
+        let inner = self.inner.read().await;
+
+        let game = match inner.games.get(game_id) {
+            Some(g) => g,
+            None => return,
+        };
+
+        let (white_id, black_id, sender_name) = if game.white_id == player_id {
+            let sender_name = inner
+                .players
+                .get(&game.white_id)
+                .map(|p| p.name.clone())
+                .unwrap_or_default();
+            (game.white_id.clone(), game.black_id.clone(), sender_name)
+        } else if game.black_id == player_id {
+            let sender_name = inner
+                .players
+                .get(&game.black_id)
+                .map(|p| p.name.clone())
+                .unwrap_or_default();
+            (game.white_id.clone(), game.black_id.clone(), sender_name)
+        } else {
+            return;
+        };
+
+        let payload = ServerMessage::ChatMessage {
+            game_id: game_id.to_string(),
+            sender_name,
+            message: trimmed.to_string(),
+        };
+
+        if let Some(player) = inner.players.get(&white_id) {
+            let _ = player.tx.send(payload.clone());
+        }
+        if let Some(player) = inner.players.get(&black_id) {
+            let _ = player.tx.send(payload);
+        }
+    }
+
     /// Mark a game as resigned; the opponent wins.
     pub async fn resign(&self, player_id: &str, game_id: &str) {
         let mut inner = self.inner.write().await;
@@ -583,6 +629,11 @@ pub async fn handle_connection(stream: TcpStream, server: GameServer) {
             ClientMessage::DeclineRematch { game_id } => {
                 if let Some(pid) = &player_id {
                     server.decline_rematch(pid, &game_id).await;
+                }
+            }
+            ClientMessage::SendChat { game_id, message } => {
+                if let Some(pid) = &player_id {
+                    server.send_chat(pid, &game_id, &message).await;
                 }
             }
         }
