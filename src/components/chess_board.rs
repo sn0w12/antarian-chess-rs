@@ -129,6 +129,16 @@ struct ChatEntry {
     is_ours: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RematchState {
+    Hidden,
+    Available,
+    Requesting,
+    RequestedByOpponent,
+    Starting,
+    Declined,
+}
+
 // ---------------------------------------------------------------------------
 // ChessBoard entity
 // ---------------------------------------------------------------------------
@@ -154,6 +164,8 @@ pub struct ChessBoard {
     pub opponent_name: String,
     pub online_tx: Option<mpsc::UnboundedSender<String>>,
     pub leave_requested: bool,
+    rematch_state: RematchState,
+    timer_generation: u64,
 
     pub bot_score: Option<i32>,
     pub bot_depth: Option<u32>,
@@ -189,6 +201,8 @@ impl ChessBoard {
             opponent_name: String::new(),
             online_tx: None,
             leave_requested: false,
+            rematch_state: RematchState::Hidden,
+            timer_generation: 0,
             bot_score: None,
             bot_depth: None,
             last_move: None,
@@ -216,8 +230,10 @@ impl ChessBoard {
         self.white_time = INITIAL_TIME;
         self.black_time = INITIAL_TIME;
         self.time_forfeit = false;
+        self.timer_generation = self.timer_generation.wrapping_add(1);
         self.online_tx = None;
         self.leave_requested = false;
+        self.rematch_state = RematchState::Hidden;
         self.bot_score = None;
         self.bot_depth = None;
         self.last_move = None;
@@ -230,6 +246,7 @@ impl ChessBoard {
 
     /// Start the per‑player countdown clock. Call once after `start_game`.
     pub fn start_timer(&mut self, cx: &mut Context<Self>) {
+        let generation = self.timer_generation;
         let weak = cx.weak_entity();
         let bg = cx.background_executor().clone();
         cx.spawn(move |_: WeakEntity<ChessBoard>, async_app: &mut AsyncApp| {
@@ -243,11 +260,19 @@ impl ChessBoard {
                         Some(e) => e,
                         None => break,
                     };
-                    let _ = app.update(|app| {
-                        let _ = entity.update(app, |this, cx| {
-                            this.tick(cx);
-                        });
+                    let keep_running = app.update(|app| {
+                        entity
+                            .update(app, |this, cx| {
+                                if this.timer_generation != generation {
+                                    return false;
+                                }
+                                this.tick(cx);
+                                true
+                            })
                     });
+                    if !keep_running {
+                        break;
+                    }
                 }
             }
         })
@@ -325,6 +350,68 @@ impl ChessBoard {
 
     fn is_game_over(&self) -> bool {
         self.game_state.game_result() != GameResult::Ongoing
+    }
+
+    fn can_offer_rematch(&self) -> bool {
+        self.game_mode == GameMode::Online
+            && self.game_id.is_some()
+            && (self.is_game_over() || self.time_forfeit)
+    }
+
+    pub fn enable_rematch_offer(&mut self) {
+        if self.can_offer_rematch() {
+            self.rematch_state = RematchState::Available;
+        }
+    }
+
+    pub fn note_rematch_requested(&mut self) {
+        if self.can_offer_rematch() {
+            self.rematch_state = RematchState::RequestedByOpponent;
+        }
+    }
+
+    pub fn note_rematch_declined(&mut self) {
+        self.rematch_state = RematchState::Declined;
+    }
+
+    pub fn note_rematch_starting(&mut self) {
+        self.rematch_state = RematchState::Starting;
+    }
+
+    fn send_online_message(&self, msg: &ClientMessage) {
+        let Some(tx) = &self.online_tx else {
+            return;
+        };
+        if let Ok(payload) = serde_json::to_string(msg) {
+            let _ = tx.send(payload);
+        }
+    }
+
+    fn request_rematch(&mut self, cx: &mut Context<Self>) {
+        let Some(game_id) = self.game_id.clone() else {
+            return;
+        };
+        self.send_online_message(&ClientMessage::RequestRematch { game_id });
+        self.rematch_state = RematchState::Requesting;
+        cx.notify();
+    }
+
+    fn accept_rematch(&mut self, cx: &mut Context<Self>) {
+        let Some(game_id) = self.game_id.clone() else {
+            return;
+        };
+        self.send_online_message(&ClientMessage::AcceptRematch { game_id });
+        self.rematch_state = RematchState::Starting;
+        cx.notify();
+    }
+
+    fn decline_rematch(&mut self, cx: &mut Context<Self>) {
+        let Some(game_id) = self.game_id.clone() else {
+            return;
+        };
+        self.send_online_message(&ClientMessage::DeclineRematch { game_id });
+        self.rematch_state = RematchState::Declined;
+        cx.notify();
     }
 
     pub fn handle_square_click(&mut self, square: usize, cx: &mut Context<Self>) {
@@ -720,6 +807,7 @@ fn sidebar(this: &ChessBoard, _window: &mut Window, cx: &mut Context<ChessBoard>
                 .text_color(t.foreground)
                 .child(this.status_message.clone()),
         )
+        .children(this.can_offer_rematch().then(|| rematch_panel(this, cx)))
         .child(Separator::horizontal().w_full())
         .children((this.game_mode == GameMode::Bot).then(|| {
             let score_str = this.bot_score.map(fmt_score).unwrap_or_default();
@@ -853,6 +941,88 @@ fn sidebar(this: &ChessBoard, _window: &mut Window, cx: &mut Context<ChessBoard>
                         ))
                 })),
         )
+        .into_any_element()
+}
+
+fn rematch_panel(this: &ChessBoard, cx: &Context<ChessBoard>) -> AnyElement {
+    let t = cx.theme();
+    let weak = cx.weak_entity();
+
+    let header = Label::new("Rematch").text_color(t.foreground);
+    let body = match this.rematch_state {
+        RematchState::Hidden => div().into_any_element(),
+        RematchState::Available => v_flex()
+            .w_full()
+            .gap_2()
+            .child(Label::new("Want another game with the same opponent?").text_color(t.muted_foreground))
+            .child(
+                Button::new("request-rematch")
+                    .w_full()
+                    .label("Request Rematch")
+                    .on_click(move |_, _window, cx| {
+                        let _ = weak.update(cx, |this, cx| {
+                            this.request_rematch(cx);
+                        });
+                    }),
+            )
+            .into_any_element(),
+        RematchState::Requesting => v_flex()
+            .w_full()
+            .gap_2()
+            .child(Label::new("Rematch request sent. Waiting for your opponent.").text_color(t.muted_foreground))
+            .into_any_element(),
+        RematchState::RequestedByOpponent => {
+            let accept_weak = cx.weak_entity();
+            let decline_weak = cx.weak_entity();
+            v_flex()
+                .w_full()
+                .gap_2()
+                .child(Label::new("Your opponent wants a rematch.").text_color(t.muted_foreground))
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .child(
+                            Button::new("accept-rematch")
+                                .flex_1()
+                                .label("Accept")
+                                .on_click(move |_, _window, cx| {
+                                    let _ = accept_weak.update(cx, |this, cx| {
+                                        this.accept_rematch(cx);
+                                    });
+                                }),
+                        )
+                        .child(
+                            Button::new("decline-rematch")
+                                .flex_1()
+                                .label("Decline")
+                                .on_click(move |_, _window, cx| {
+                                    let _ = decline_weak.update(cx, |this, cx| {
+                                        this.decline_rematch(cx);
+                                    });
+                                }),
+                        ),
+                )
+                .into_any_element()
+        }
+        RematchState::Starting => v_flex()
+            .w_full()
+            .gap_2()
+            .child(Label::new("Starting rematch...").text_color(t.muted_foreground))
+            .into_any_element(),
+        RematchState::Declined => v_flex()
+            .w_full()
+            .gap_2()
+            .child(Label::new("Rematch declined.").text_color(t.muted_foreground))
+            .into_any_element(),
+    };
+
+    div()
+        .w_full()
+        .p_2()
+        .rounded_md()
+        .bg(t.muted.opacity(0.15))
+        .child(v_flex().w_full().gap_2().child(header).child(body))
         .into_any_element()
 }
 

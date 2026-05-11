@@ -331,8 +331,56 @@ impl ChessApp {
                     board.status_message = match result.as_deref() {
                         Some("win") => "You win!".into(),
                         Some("loss") => "You lose".into(),
+                        Some("draw") => "Draw".into(),
                         _ => format!("Game over: {reason}"),
                     };
+                    board.enable_rematch_offer();
+                    cx.notify();
+                });
+            }
+            ServerMessage::RematchRequested { game_id } => {
+                self.board.update(cx, |board, cx| {
+                    if board.game_id.as_deref() != Some(game_id.as_str()) {
+                        return;
+                    }
+                    board.note_rematch_requested();
+                    board.push_system_chat_message("Opponent requested a rematch.".to_string());
+                    cx.notify();
+                });
+            }
+            ServerMessage::RematchAccepted {
+                old_game_id,
+                new_game_id,
+                your_color,
+            } => {
+                let color = if your_color == "white" {
+                    Color::White
+                } else {
+                    Color::Black
+                };
+                let tx = self.online_tx.clone();
+                self.board.update(cx, |board, cx| {
+                    if board.game_id.as_deref() != Some(old_game_id.as_str()) {
+                        return;
+                    }
+                    board.note_rematch_starting();
+                    let opponent_name = board.opponent_name.clone();
+                    board.game_id = Some(new_game_id);
+                    board.start_game(GameMode::Online, color, &opponent_name);
+                    board.online_tx = tx;
+                    board.push_system_chat_message("Rematch started.".to_string());
+                    board.start_timer(cx);
+                });
+                self.view = View::Playing;
+                cx.notify();
+            }
+            ServerMessage::RematchDeclined { game_id } => {
+                self.board.update(cx, |board, cx| {
+                    if board.game_id.as_deref() != Some(game_id.as_str()) {
+                        return;
+                    }
+                    board.note_rematch_declined();
+                    board.push_system_chat_message("Rematch declined.".to_string());
                     cx.notify();
                 });
             }
@@ -371,7 +419,6 @@ impl ChessApp {
                     cx.notify();
                 });
             }
-            _ => {}
         }
     }
 
