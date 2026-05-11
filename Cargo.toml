@@ -10,7 +10,7 @@ default-members = [".", "crates/bot", "crates/engine", "crates/server"]
 resolver = "3"
 
 [features]
-default = ["auto_update"]
+default = []
 auto_update = ["reqwest", "semver", "image", "ico"]
 
 [dependencies]

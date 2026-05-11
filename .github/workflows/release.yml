@@ -49,7 +49,7 @@ jobs:
                       ${{ runner.os }}-${{ matrix.target }}-cargo-
 
             - name: Build release binary
-              run: cargo build -p ${{ env.ASSET_NAME }} --release --target ${{ matrix.target }}
+              run: cargo build -p ${{ env.ASSET_NAME }} --release --features auto_update --target ${{ matrix.target }}
 
             - name: Prepare artifact name
               id: prep
