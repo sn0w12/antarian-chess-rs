@@ -91,6 +91,11 @@ pub enum ServerMessage {
         /// Public lobbies currently open.
         lobbies: Vec<LobbySummary>,
     },
+    /// A push update for the public lobby browser after the lobby set changes.
+    LobbyListUpdated {
+        /// Public lobbies currently open.
+        lobbies: Vec<LobbySummary>,
+    },
     /// Confirmation that a lobby was created.
     LobbyCreated {
         /// The short lobby code other players can join.

@@ -389,6 +389,20 @@ impl ChessApp {
         self.connect_online(OnlineIntent::JoinLobby(normalized), cx);
     }
 
+    fn apply_public_lobby_list(&mut self, lobbies: Vec<LobbySummary>, cx: &mut Context<Self>) {
+        self.public_lobbies = lobbies;
+        if matches!(self.online_intent, Some(OnlineIntent::BrowseLobbies))
+            && self.active_lobby_code.is_none()
+        {
+            self.online_status = if self.public_lobbies.is_empty() {
+                "No public lobbies yet.".into()
+            } else {
+                "Select a public lobby to join.".into()
+            };
+        }
+        cx.notify();
+    }
+
     fn handle_server_message(&mut self, msg: ServerMessage, cx: &mut Context<Self>) {
         match msg {
             ServerMessage::Joined { .. } => {
@@ -423,18 +437,9 @@ impl ChessApp {
                 self.view = View::Menu;
                 cx.notify();
             }
-            ServerMessage::LobbyList { lobbies } => {
-                self.public_lobbies = lobbies;
-                if matches!(self.online_intent, Some(OnlineIntent::BrowseLobbies))
-                    && self.active_lobby_code.is_none()
-                {
-                    self.online_status = if self.public_lobbies.is_empty() {
-                        "No public lobbies yet.".into()
-                    } else {
-                        "Select a public lobby to join.".into()
-                    };
-                }
-                cx.notify();
+            ServerMessage::LobbyList { lobbies } => self.apply_public_lobby_list(lobbies, cx),
+            ServerMessage::LobbyListUpdated { lobbies } => {
+                self.apply_public_lobby_list(lobbies, cx)
             }
             ServerMessage::LobbyCreated {
                 lobby_code,

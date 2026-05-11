@@ -380,11 +380,9 @@ impl GameServer {
 
     fn broadcast_public_lobby_list_inner(&self, inner: &ServerInner) {
         let lobbies = self.public_lobby_summaries_inner(inner);
-        for (player_id, player) in &inner.players {
-            if matches!(player.state, PlayerState::BrowsingLobbies)
-                && !matches!(inner.players.get(player_id).map(|p| &p.state), Some(PlayerState::InLobby(_)))
-            {
-                let _ = player.tx.send(ServerMessage::LobbyList {
+        for player in inner.players.values() {
+            if matches!(player.state, PlayerState::BrowsingLobbies) {
+                let _ = player.tx.send(ServerMessage::LobbyListUpdated {
                     lobbies: lobbies.clone(),
                 });
             }
