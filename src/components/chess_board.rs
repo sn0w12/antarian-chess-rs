@@ -3,13 +3,19 @@ use chess_bot::find_best_move;
 use chess_engine::*;
 use chess_server::protocol::ClientMessage;
 use gpui::{
-    AnyElement, AppContext, AsyncApp, AvailableSpace, Context, Entity, Hsla, Image, ImageFormat, IntoElement, ObjectFit, ParentElement, Pixels, Render, ScrollStrategy, SharedString, Size, Styled, StyledImage, WeakEntity, Window, div, hsla, img, prelude::FluentBuilder, px, size
+    AnyElement, AppContext, AsyncApp, AvailableSpace, Context, Entity, Hsla, Image, ImageFormat,
+    IntoElement, ObjectFit, ParentElement, Pixels, Render, ScrollStrategy, SharedString, Size,
+    Styled, StyledImage, WeakEntity, Window, div, hsla, img, prelude::FluentBuilder, px, size,
 };
 use gpui_component::{
-    ActiveTheme, VirtualListScrollHandle, button::Button, h_flex, label::Label,
-    separator::Separator, v_flex, v_virtual_list,
+    ActiveTheme, VirtualListScrollHandle,
+    button::Button,
+    h_flex,
     input::{Input, InputState},
+    label::Label,
     scroll::Scrollbar,
+    separator::Separator,
+    v_flex, v_virtual_list,
 };
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
@@ -557,7 +563,8 @@ impl Render for ChessBoard {
         let list_width = chat_list_width(window, &self.chat_scroll_handle);
         let font_family = cx.theme().font_family.clone();
         let t = cx.theme();
-        if list_width != self.chat_list_width || self.chat_item_sizes.len() != self.chat_messages.len()
+        if list_width != self.chat_list_width
+            || self.chat_item_sizes.len() != self.chat_messages.len()
         {
             self.refresh_chat_item_sizes(
                 list_width,
@@ -727,7 +734,7 @@ fn sidebar(this: &ChessBoard, _window: &mut Window, cx: &mut Context<ChessBoard>
         .child(Separator::horizontal().w_full())
         .child(clock_row("White", &white_time, Color::White, this, t))
         .child(clock_row("Black", &black_time, Color::Black, this, t))
-        .when(this.game_mode == GameMode::Online, |e | {
+        .when(this.game_mode == GameMode::Online, |e| {
             e.child(Separator::horizontal().w_full())
         })
         .children((this.game_mode == GameMode::Online).then(|| {
@@ -839,7 +846,11 @@ fn sidebar(this: &ChessBoard, _window: &mut Window, cx: &mut Context<ChessBoard>
                     div()
                         .rounded_sm()
                         .bg(t.danger.opacity(0.15))
-                        .child(captured_piece_icon(*k, this.player_color, t.danger.opacity(0.15)))
+                        .child(captured_piece_icon(
+                            *k,
+                            this.player_color,
+                            t.danger.opacity(0.15),
+                        ))
                 })),
         )
         .into_any_element()
@@ -855,8 +866,7 @@ fn chat_item_size(
     muted_foreground: Hsla,
     window: &mut Window,
     cx: &mut Context<ChessBoard>,
-) -> Size<Pixels>
-{
+) -> Size<Pixels> {
     let mut element = chat_row_element(
         entry,
         list_width,
@@ -909,30 +919,21 @@ fn chat_row_element(
         muted_foreground
     };
 
-    let body = div()
-        .w_full()
-        .p_2()
-        .rounded_md()
-        .bg(bubble_bg)
-        .child(
-            Label::new(entry.message.clone())
-                .font_family(font_family.clone())
-                .text_size(CHAT_FONT_SIZE)
-                .line_height(CHAT_LINE_HEIGHT)
-                .text_color(foreground),
-        );
+    let body = div().w_full().p_2().rounded_md().bg(bubble_bg).child(
+        Label::new(entry.message.clone())
+            .font_family(font_family.clone())
+            .text_size(CHAT_FONT_SIZE)
+            .line_height(CHAT_LINE_HEIGHT)
+            .text_color(foreground),
+    );
 
-    let row = v_flex()
-        .w_full()
-        .p_2()
-        .gap_1()
-        .child(
-            Label::new(entry.sender_name.clone())
-                .font_family(font_family.clone())
-                .text_size(CHAT_FONT_SIZE)
-                .line_height(CHAT_LINE_HEIGHT)
-                .text_color(sender_color),
-        );
+    let row = v_flex().w_full().p_2().gap_1().child(
+        Label::new(entry.sender_name.clone())
+            .font_family(font_family.clone())
+            .text_size(CHAT_FONT_SIZE)
+            .line_height(CHAT_LINE_HEIGHT)
+            .text_color(sender_color),
+    );
 
     if entry.is_ours {
         row.items_end().child(body)
