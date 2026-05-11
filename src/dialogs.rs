@@ -114,7 +114,7 @@ impl ChessApp {
         cx: &mut App,
     ) {
         window.open_dialog(cx, move |dlg: Dialog, _wnd, app: &mut App| {
-            dlg.title(div().child("Install Blame"))
+            dlg.title(div().child("Install Antarian Chess"))
                 .child(
                     v_flex()
                         .gap_3()
@@ -147,7 +147,7 @@ impl ChessApp {
                             window.push_notification(
                                 (
                                     NotificationType::Info,
-                                    SharedString::from("Installing Blame..."),
+                                    SharedString::from("Installing Antarian Chess..."),
                                 ),
                                 cx,
                             );
@@ -186,14 +186,14 @@ impl ChessApp {
         window.open_dialog(cx, move |dlg: Dialog, _wnd, app: &mut App| {
             let version_for_install = version.clone();
 
-            dlg.title(div().child("Update Blame"))
+            dlg.title(div().child("Update Antarian Chess"))
                 .child(
                     v_flex().gap_3().child(
                         div()
                             .text_sm()
                             .text_color(app.theme().muted_foreground)
                             .child(format!(
-                                "Blame {} is available. Download and restart now?",
+                                "Antarian Chess {} is available. Download and restart now?",
                                 version
                             )),
                     ),

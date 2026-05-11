@@ -94,7 +94,7 @@ fn get_install_dir() -> anyhow::Result<PathBuf> {
 
 fn executable_name() -> &'static str {
     if cfg!(target_os = "windows") {
-        "antarian-chess-rs.exe"
+        "Antarian Chess.exe"
     } else {
         "antarian-chess-rs"
     }
@@ -109,7 +109,7 @@ fn create_shortcuts(bin_path: &Path) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("No config dir"))?
         .join(r"Microsoft\Windows\Start Menu\Programs");
     fs::create_dir_all(&start_menu_dir)?;
-    let start_menu_link = start_menu_dir.join("antarian-chess-rs.lnk");
+    let start_menu_link = start_menu_dir.join("Antarian Chess.lnk");
     create_lnk(bin_path, &start_menu_link)?;
 
     Ok(())
