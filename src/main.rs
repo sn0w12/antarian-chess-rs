@@ -192,7 +192,8 @@ impl ChessApp {
             async move {
                 let (ws, _) = match connect_async(WS_URL).await {
                     Ok(ws) => ws,
-                    Err(_) => {
+                    Err(error) => {
+                        eprintln!("Failed to connect to server: {}", error);
                         app.update(|app| {
                             if let Some(entity) = weak.upgrade() {
                                 let _ = entity.update(app, |this, cx| {
