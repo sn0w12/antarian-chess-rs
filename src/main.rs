@@ -725,7 +725,7 @@ fn menu_view(
                         .child({
                             let weak = weak.clone();
                             Button::new("browse-lobbies-btn")
-                                .label("Browse Public Lobbies")
+                                .label("Browse Lobbies")
                                 .w_full()
                                 .disabled(name_empty)
                                 .on_click(move |_, _window, cx| {
@@ -920,13 +920,13 @@ fn matchmaking_view(app: &mut ChessApp, cx: &mut Context<ChessApp>) -> gpui::Any
                 .items_center()
                 .w(px(320.))
                 .gap_2()
+                .text_center()
                 .child(Label::new(title).text_color(cx.theme().foreground))
                 .child(Label::new(detail).text_color(cx.theme().muted_foreground))
                 .children(app.active_lobby_code.as_ref().map(|code| {
                     v_flex()
                         .w_full()
                         .gap_1()
-                        .child(Label::new("Lobby Code").text_color(cx.theme().muted_foreground))
                         .child(
                             h_flex()
                                 .w_full()
