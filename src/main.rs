@@ -16,6 +16,7 @@ use gpui::{
 use gpui_component::{
     ActiveTheme, Disableable, Root, Sizable, TitleBar,
     button::Button,
+    clipboard::Clipboard,
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
@@ -23,13 +24,15 @@ use gpui_component::{
     separator::Separator,
     slider::{Slider, SliderEvent, SliderState},
     v_flex,
+    WindowExt,
 };
 use gpui_component_assets::Assets;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::ops::Range;
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::time;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -272,9 +275,24 @@ impl ChessApp {
                 }
 
                 let write_task = tokio::spawn(async move {
-                    while let Some(msg) = rx.recv().await {
-                        if write.send(Message::Text(msg)).await.is_err() {
-                            break;
+                    let mut heartbeat = time::interval(Duration::from_secs(20));
+                    heartbeat.tick().await;
+
+                    loop {
+                        tokio::select! {
+                            maybe_msg = rx.recv() => {
+                                let Some(msg) = maybe_msg else {
+                                    break;
+                                };
+                                if write.send(Message::Text(msg)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            _ = heartbeat.tick() => {
+                                if write.send(Message::Ping(Vec::new())).await.is_err() {
+                                    break;
+                                }
+                            }
                         }
                     }
                 });
@@ -282,6 +300,7 @@ impl ChessApp {
                 while let Some(Ok(msg)) = read.next().await {
                     let text = match msg {
                         Message::Text(t) => t,
+                        Message::Ping(_) | Message::Pong(_) => continue,
                         Message::Close(_) => break,
                         _ => continue,
                     };
@@ -406,11 +425,15 @@ impl ChessApp {
             }
             ServerMessage::LobbyList { lobbies } => {
                 self.public_lobbies = lobbies;
-                self.online_status = if self.public_lobbies.is_empty() {
-                    "No public lobbies yet.".into()
-                } else {
-                    "Select a public lobby to join.".into()
-                };
+                if matches!(self.online_intent, Some(OnlineIntent::BrowseLobbies))
+                    && self.active_lobby_code.is_none()
+                {
+                    self.online_status = if self.public_lobbies.is_empty() {
+                        "No public lobbies yet.".into()
+                    } else {
+                        "Select a public lobby to join.".into()
+                    };
+                }
                 cx.notify();
             }
             ServerMessage::LobbyCreated {
@@ -896,10 +919,28 @@ fn matchmaking_view(app: &mut ChessApp, cx: &mut Context<ChessApp>) -> gpui::Any
                 .child(Label::new(detail).text_color(cx.theme().muted_foreground))
                 .children(app.active_lobby_code.as_ref().map(|code| {
                     v_flex()
-                        .items_center()
+                        .w_full()
                         .gap_1()
                         .child(Label::new("Lobby Code").text_color(cx.theme().muted_foreground))
-                        .child(Label::new(code.clone()).text_color(cx.theme().foreground))
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .justify_center()
+                                .gap_2()
+                                .child(Label::new(code.clone()).text_color(cx.theme().foreground))
+                                .child(
+                                    Clipboard::new("copy-lobby-code")
+                                        .value(code.clone())
+                                        .tooltip("Copy lobby code")
+                                        .on_copied(|value, window, cx| {
+                                            window.push_notification(
+                                                format!("Lobby code copied: {}", value),
+                                                cx,
+                                            );
+                                        }),
+                                ),
+                        )
                         .into_any_element()
                 }))
                 .child(Button::new("cancel-mm-btn").label("Cancel").on_click(
