@@ -47,6 +47,8 @@ export interface OnlineOptions extends EngineOptions {
     arch?: string;
     debug?: boolean;
     appName?: string;
+    /** Send periodic Ping messages to keep the socket open. Defaults to true. */
+    heartbeat?: boolean;
     /** Injected for tests and non-browser runtimes. */
     WebSocket?: WebSocketConstructor;
 }
@@ -86,6 +88,10 @@ export class OnlineClient {
     lastResult: string | null = null;
     lastReason: string | null = null;
     lastError: string | null = null;
+
+    get isClosed(): boolean {
+        return this.closed;
+    }
 
     private readonly listeners = new Map<
         keyof OnlineEvents,
@@ -165,7 +171,9 @@ export class OnlineClient {
         });
         const message = await joined;
         client.playerId = message.data.player_id;
-        client.startHeartbeat();
+        if (options.heartbeat ?? true) {
+            client.startHeartbeat();
+        }
         return client;
     }
 

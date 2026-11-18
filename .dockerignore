@@ -1,3 +1,7 @@
 /target
 /crates/*/target
 /crates/*/Cargo.lock
+/.git
+**/node_modules
+**/dist
+/apps/website/public/chess_wasm.wasm

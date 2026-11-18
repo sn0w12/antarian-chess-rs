@@ -96,6 +96,9 @@ client.sendChat("good luck");
 client.resign();
 ```
 
+`heartbeat` defaults to true and sends `Ping` every 20 seconds. Pass
+`heartbeat: false` when the server does not implement `Ping`.
+
 The client keeps these fields in sync with the server:
 
 - `status`: `idle`, `matchmaking`, `lobby`, `playing`, or `over`
