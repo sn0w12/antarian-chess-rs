@@ -213,7 +213,6 @@ function Details({
 function MobileBar({
   clocks,
   rematch,
-  captures,
   history,
   onLeave,
   onOpenChat,
@@ -259,20 +258,6 @@ function MobileBar({
               </Button>
             </>
           ) : null}
-
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
-            <CapturedInline
-              pieces={captures.yours}
-              color={captures.yourColor === "white" ? "black" : "white"}
-            />
-            {captures.yours.length > 0 && captures.theirs.length > 0 ? (
-              <span className="h-3 w-px shrink-0 bg-border" />
-            ) : null}
-            <CapturedInline
-              pieces={captures.theirs}
-              color={captures.yourColor}
-            />
-          </div>
         </div>
 
         {clocks ? (
