@@ -24,18 +24,20 @@ export function BoardArea({
   centipawns,
 }: BoardAreaProps) {
   return (
-    <div className="flex flex-col md:flex-row w-full min-w-0 items-stretch gap-2">
-      <EvalBar centipawns={centipawns} orientation={orientation} />
-      <div className="aspect-square min-w-0 flex-1">
-        <Board
-          state={state}
-          orientation={orientation}
-          selected={selected}
-          targets={targets}
-          interactive={interactive}
-          onSelect={onSelect}
-          onMove={onMove}
-        />
+    <div className="flex h-full w-full min-h-0 items-center justify-center [container-type:size]">
+      <div className="flex w-[min(100cqw,calc(100cqh_-_0.75rem))] flex-col items-stretch gap-1.5 lg:h-full lg:w-full lg:flex-row lg:gap-2">
+        <EvalBar centipawns={centipawns} orientation={orientation} />
+        <div className="aspect-square min-w-0 flex-1">
+          <Board
+            state={state}
+            orientation={orientation}
+            selected={selected}
+            targets={targets}
+            interactive={interactive}
+            onSelect={onSelect}
+            onMove={onMove}
+          />
+        </div>
       </div>
     </div>
   );

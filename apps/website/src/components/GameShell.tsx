@@ -10,11 +10,11 @@ export function GameShell({
 }) {
   return (
     <TooltipProvider>
-      <div className="flex min-h-screen flex-col gap-2 p-2 lg:h-screen lg:flex-row lg:justify-center">
-        <div className="flex min-h-0 w-full justify-center lg:w-[min(calc(100vh+0.25rem),calc(100vw-22rem))] lg:shrink-0">
+      <div className="flex h-dvh flex-col gap-1.5 overflow-hidden pt-[max(0.375rem,env(safe-area-inset-top))] pr-[max(0.375rem,env(safe-area-inset-right))] pb-[max(0.375rem,env(safe-area-inset-bottom))] pl-[max(0.375rem,env(safe-area-inset-left))] lg:h-screen lg:flex-row lg:justify-center lg:gap-2 lg:p-2">
+        <div className="flex min-h-0 w-full flex-1 items-center justify-center lg:w-[min(calc(100vh+0.25rem),calc(100vw-22rem))] lg:flex-none lg:shrink-0">
           {board}
         </div>
-        <aside className="flex min-h-0 w-full flex-col lg:w-[320px] lg:shrink-0">
+        <aside className="flex min-h-0 w-full shrink-0 flex-col lg:w-[320px]">
           {sidebar}
         </aside>
       </div>

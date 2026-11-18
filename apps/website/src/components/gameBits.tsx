@@ -12,7 +12,7 @@ export function GameLoading({
   }
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-3 px-6 text-center">
+    <div className="flex h-dvh flex-col items-center justify-center overflow-hidden gap-3 px-6 text-center">
       {error ? (
         <>
           <p className="text-sm font-medium">Could not load the engine</p>

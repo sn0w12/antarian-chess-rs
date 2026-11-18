@@ -73,6 +73,12 @@ export function BotPage() {
           you="White"
           opponent="Bot"
           moves={reviewing ? `${game.viewIndex} / ${totalPlies}` : `${totalPlies}`}
+          history={{
+            canBack: game.viewIndex > 0,
+            canForward: game.viewIndex < game.history.length - 1,
+            onBack: () => game.setView(game.viewIndex - 1),
+            onForward: () => game.setView(game.viewIndex + 1),
+          }}
           status={status}
           yourTurn={game.interactive}
           bot={{

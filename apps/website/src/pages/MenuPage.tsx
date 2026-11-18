@@ -28,37 +28,39 @@ export function MenuPage() {
   };
 
   return (
-    <main className="flex min-h-screen items-center justify-center p-4">
-      <Card className="w-full max-w-[440px]">
-        <CardPanel className="flex flex-col gap-4 p-4">
-          <div className="flex flex-col gap-1">
-            <h1 className="font-heading text-xl font-semibold">
-              Antarian Chess
-            </h1>
-            <p className="text-sm text-muted-foreground">
-              Play local, queue randomly, or host your own match.
-            </p>
+    <main className="flex h-dvh items-center justify-center overflow-hidden p-4">
+      <Card className="max-h-full w-full max-w-[440px] [@media(max-height:560px)]:max-w-[660px]">
+        <CardPanel className="flex min-h-0 flex-col gap-4 overflow-y-auto p-4 [@media(max-height:560px)]:grid [@media(max-height:560px)]:grid-cols-2 [@media(max-height:560px)]:gap-x-6">
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-1">
+              <h1 className="font-heading text-xl font-semibold">
+                Antarian Chess
+              </h1>
+              <p className="text-sm text-muted-foreground">
+                Play local, queue randomly, or host your own match.
+              </p>
+            </div>
+
+            <Field>
+              <FieldLabel>Player Name</FieldLabel>
+              <Input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                maxLength={24}
+              />
+            </Field>
+
+            <div className="flex flex-col gap-2">
+              <span className="text-sm text-muted-foreground">Solo</span>
+              <Button size="lg" className="w-full" onClick={startBot}>
+                vs Bot
+              </Button>
+            </div>
           </div>
 
-          <Field>
-            <FieldLabel>Player Name</FieldLabel>
-            <Input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              maxLength={24}
-            />
-          </Field>
-
           <div className="flex flex-col gap-2">
-            <span className="text-sm text-muted-foreground">Solo</span>
-            <Button size="lg" className="w-full" onClick={startBot}>
-              vs Bot
-            </Button>
-          </div>
+            <Separator className="[@media(max-height:560px)]:hidden" />
 
-          <Separator />
-
-          <div className="flex flex-col gap-2">
             <span className="text-sm text-muted-foreground">Online</span>
             <Button
               size="lg"
@@ -75,17 +77,17 @@ export function MenuPage() {
             >
               Browse Lobbies
             </Button>
-            <div className="flex flex-col md:flex-row gap-2">
-              <Separator className="md:hidden" />
+            <div className="flex flex-col gap-2 lg:flex-row">
+              <Separator className="lg:hidden" />
               <Button
-                className="md:flex-1"
+                className="lg:flex-1"
                 disabled={nameEmpty}
                 onClick={() => startOnline("public")}
               >
                 Create Public Lobby
               </Button>
               <Button
-                className="md:flex-1"
+                className="lg:flex-1"
                 disabled={nameEmpty}
                 onClick={() => startOnline("private")}
               >

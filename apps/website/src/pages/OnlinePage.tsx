@@ -175,12 +175,12 @@ function NameScreen({ onContinue }: { onContinue: (name: string) => void }) {
   const trimmed = name.trim();
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-4">
-      <Card className="w-full max-w-[360px]">
+    <div className="flex h-dvh items-center justify-center overflow-hidden p-4">
+      <Card className="max-h-full w-full max-w-[360px]">
         <CardHeader>
           <CardTitle>Player Name</CardTitle>
         </CardHeader>
-        <CardPanel>
+        <CardPanel className="min-h-0 overflow-y-auto">
           <form
             className="flex flex-col gap-4"
             onSubmit={(event) => {
@@ -225,8 +225,8 @@ function CenterCard({
   loading?: boolean;
 }) {
   return (
-    <div className="flex min-h-screen items-center justify-center p-4">
-      <div className="flex w-[320px] flex-col items-center gap-2 text-center">
+    <div className="flex h-dvh items-center justify-center overflow-hidden p-4">
+      <div className="flex w-full max-w-[320px] flex-col items-center gap-2 text-center">
         <span className="text-sm font-medium">{title}</span>
         <span className="text-sm text-muted-foreground">{detail}</span>
         {code ? <LobbyCode code={code} /> : null}
@@ -256,9 +256,9 @@ function LobbyBrowser({
   const empty = code.trim().length === 0;
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-4">
-      <Card className="w-full max-w-[460px]">
-        <CardPanel className="flex h-[520px] flex-col gap-3 p-4">
+    <div className="flex h-dvh items-center justify-center overflow-hidden p-4">
+      <Card className="max-h-full w-full max-w-[460px]">
+        <CardPanel className="flex h-[min(520px,calc(100dvh-2.25rem))] min-h-0 flex-col gap-3 p-4">
           <span className="text-sm font-medium">Public Lobbies</span>
           <span className="text-sm text-muted-foreground">
             {message || (lobbies.length === 0 ? "No public lobbies yet." : "Select a public lobby to join.")}
@@ -368,7 +368,7 @@ function OnlineGame({
   const { live, viewed } = game;
   if (!live || !viewed) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
+      <div className="flex h-dvh items-center justify-center overflow-hidden">
         <Spinner aria-label="Starting game" />
       </div>
     );
@@ -430,6 +430,12 @@ function OnlineGame({
           you={youLabel}
           opponent={game.opponentName ?? "Opponent"}
           moves={reviewing ? `${game.viewIndex} / ${totalPlies}` : `${totalPlies}`}
+          history={{
+            canBack: game.viewIndex > 0,
+            canForward: game.viewIndex < game.history.length - 1,
+            onBack: () => game.setView(game.viewIndex - 1),
+            onForward: () => game.setView(game.viewIndex + 1),
+          }}
           status={status}
           yourTurn={game.interactive}
           chat={{ messages: game.chat, onSend: game.sendChat }}

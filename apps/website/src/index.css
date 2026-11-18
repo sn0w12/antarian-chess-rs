@@ -183,11 +183,21 @@
   }
 
   html {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
     color-scheme: dark;
   }
 
   body {
     @apply bg-background text-foreground antialiased;
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  #root {
+    height: 100%;
   }
 
   code,
@@ -195,5 +205,15 @@
   samp,
   pre {
     font-family: var(--font-mono);
+  }
+}
+
+@media (pointer: coarse) {
+  * {
+    scrollbar-width: none;
+  }
+
+  *::-webkit-scrollbar {
+    display: none;
   }
 }

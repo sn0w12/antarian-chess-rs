@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Color, PieceKind } from "antarian-chess";
+import { ChevronLeft, ChevronRight, LogOut, MessageSquare } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -12,6 +13,12 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardPanel } from "@/components/ui/card";
+import {
+  Drawer,
+  DrawerHeader,
+  DrawerPopup,
+  DrawerTitle,
+} from "@/components/ui/drawer";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
@@ -45,10 +52,52 @@ interface GameSidebarProps {
   chat?: ChatControls;
   rematch?: RematchControls;
   captures: { yours: PieceKind[]; theirs: PieceKind[]; yourColor: Color };
+  history?: {
+    canBack: boolean;
+    canForward: boolean;
+    onBack: () => void;
+    onForward: () => void;
+  };
   onLeave: () => void;
 }
 
-export function GameSidebar({
+export function GameSidebar(props: GameSidebarProps) {
+  const [chatOpen, setChatOpen] = useState(false);
+
+  return (
+    <>
+      <MobileBar
+        {...props}
+        onOpenChat={props.chat ? () => setChatOpen(true) : undefined}
+      />
+
+      <Card className="hidden h-full min-h-0 py-0 lg:flex">
+        <CardPanel className="flex h-full min-h-0 flex-col gap-2 overflow-y-auto p-2">
+          <Details {...props} />
+        </CardPanel>
+      </Card>
+
+      {props.chat ? (
+        <Drawer open={chatOpen} onOpenChange={setChatOpen} position="bottom">
+          <DrawerPopup
+            className="h-[min(70dvh,34rem)]"
+            showBar
+            showCloseButton
+          >
+            <DrawerHeader className="px-4 pb-2">
+              <DrawerTitle>Match chat</DrawerTitle>
+            </DrawerHeader>
+            <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
+              <ChatPanel chat={props.chat} showLabel={false} />
+            </div>
+          </DrawerPopup>
+        </Drawer>
+      ) : null}
+    </>
+  );
+}
+
+function Details({
   mode,
   you,
   opponent,
@@ -63,75 +112,154 @@ export function GameSidebar({
   onLeave,
 }: GameSidebarProps) {
   return (
-    <Card className="h-full py-0">
-      <CardPanel className="flex h-full flex-col gap-2 overflow-y-auto p-2">
-        <Detail label="Mode" value={mode} />
-        <Detail label="You" value={you} />
-        <Detail label="Opponent" value={opponent} />
-        <Detail label="Moves" value={moves} />
+    <>
+      <Detail label="Mode" value={mode} />
+      <Detail label="You" value={you} />
+      <Detail label="Opponent" value={opponent} />
+      <Detail label="Moves" value={moves} />
 
-        <Separator />
+      <Separator />
 
-        <div
-          className={cn(
-            "rounded-md p-2 text-sm",
-            yourTurn ? "bg-primary/25" : "bg-muted/40",
-          )}
-        >
-          {status}
-        </div>
-
-        {rematch && <RematchPanel controls={rematch} />}
-
-        {bot && (
-          <>
-            <Separator />
-            <Detail label="Eval (White)" value={bot.score} />
-            <Detail label="Search Depth" value={bot.depth} />
-          </>
+      <div
+        className={cn(
+          "rounded-md p-2 text-sm",
+          yourTurn ? "bg-primary/25" : "bg-muted/40",
         )}
+      >
+        {status}
+      </div>
 
-        {clocks && (
+      {rematch && <RematchPanel controls={rematch} />}
+
+      {bot && (
+        <>
+          <Separator />
+          <Detail label="Eval (White)" value={bot.score} />
+          <Detail label="Search Depth" value={bot.depth} />
+        </>
+      )}
+
+      {clocks && (
+        <>
+          <Separator />
+          <ClockRow
+            label="White"
+            time={clocks.white}
+            active={clocks.active === "white"}
+          />
+          <ClockRow
+            label="Black"
+            time={clocks.black}
+            active={clocks.active === "black"}
+          />
+        </>
+      )}
+
+      {chat && (
+        <>
+          <Separator />
+          <ChatPanel chat={chat} />
+        </>
+      )}
+
+      <Separator />
+      <LeaveButton onLeave={onLeave} />
+      <Separator />
+
+      <span className="text-sm text-muted-foreground">Yours:</span>
+      <Captured
+        pieces={captures.yours}
+        color={captures.yourColor === "white" ? "black" : "white"}
+        tone="own"
+      />
+      <span className="text-sm text-muted-foreground">Theirs:</span>
+      <Captured
+        pieces={captures.theirs}
+        color={captures.yourColor}
+        tone="opponent"
+      />
+    </>
+  );
+}
+
+function MobileBar({
+  clocks,
+  rematch,
+  captures,
+  history,
+  onLeave,
+  onOpenChat,
+}: GameSidebarProps & { onOpenChat?: () => void }) {
+  return (
+    <div className="flex shrink-0 flex-col gap-1.5 rounded-xl border border-border/70 bg-card p-1.5 lg:hidden">
+      {rematch ? <RematchPanel controls={rematch} /> : null}
+
+      <div className="flex min-w-0 items-center gap-1">
+        {history ? (
           <>
-            <Separator />
-            <ClockRow
-              label="White"
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label="Previous move"
+              disabled={!history.canBack}
+              onClick={history.onBack}
+            >
+              <ChevronLeft aria-hidden="true" />
+            </Button>
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label="Next move"
+              disabled={!history.canForward}
+              onClick={history.onForward}
+            >
+              <ChevronRight aria-hidden="true" />
+            </Button>
+          </>
+        ) : null}
+
+        {clocks ? (
+          <div className="flex shrink-0 items-center gap-1">
+            <ClockChip
+              label="W"
               time={clocks.white}
               active={clocks.active === "white"}
             />
-            <ClockRow
-              label="Black"
+            <ClockChip
+              label="B"
               time={clocks.black}
               active={clocks.active === "black"}
             />
-          </>
-        )}
+          </div>
+        ) : null}
 
-        {chat && (
-          <>
-            <Separator />
-            <ChatPanel chat={chat} />
-          </>
-        )}
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden px-1">
+          <CapturedInline
+            pieces={captures.yours}
+            color={captures.yourColor === "white" ? "black" : "white"}
+          />
+          {captures.yours.length > 0 && captures.theirs.length > 0 ? (
+            <span className="h-3 w-px shrink-0 bg-border" />
+          ) : null}
+          <CapturedInline
+            pieces={captures.theirs}
+            color={captures.yourColor}
+          />
+        </div>
 
-        <Separator />
-        <LeaveButton onLeave={onLeave} />
-        <Separator />
-
-        <span className="text-sm text-muted-foreground">Yours:</span>
-        <Captured
-          pieces={captures.yours}
-          color={captures.yourColor === "white" ? "black" : "white"}
-          tone="own"
-        />
-        <span className="text-sm text-muted-foreground">Theirs:</span>
-        <Captured
-          pieces={captures.theirs}
-          color={captures.yourColor}
-          tone="opponent"
-        />
-      </CardPanel>
-    </Card>
+        {onOpenChat ? (
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            aria-label="Open match chat"
+            onClick={onOpenChat}
+          >
+            <MessageSquare />
+          </Button>
+        ) : null}
+        <LeaveButton onLeave={onLeave} compact />
+      </div>
+    </div>
   );
 }
 
@@ -168,6 +296,30 @@ function ClockRow({
   );
 }
 
+function ClockChip({
+  label,
+  time,
+  active,
+}: {
+  label: string;
+  time: string;
+  active: boolean;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-baseline gap-1 rounded-md px-1.5 py-1",
+        active
+          ? "bg-primary/20 text-foreground"
+          : "bg-muted/40 text-muted-foreground",
+      )}
+    >
+      <span className="text-[0.625rem] font-medium uppercase">{label}</span>
+      <span className="font-mono text-xs tabular-nums">{time}</span>
+    </span>
+  );
+}
+
 function Captured({
   pieces,
   color,
@@ -195,6 +347,31 @@ function Captured({
         </span>
       ))}
     </div>
+  );
+}
+
+function CapturedInline({
+  pieces,
+  color,
+}: {
+  pieces: PieceKind[];
+  color: Color;
+}) {
+  if (pieces.length === 0) {
+    return null;
+  }
+
+  return (
+    <span className="flex min-w-0 items-center gap-0.5 overflow-hidden">
+      {pieces.map((kind, index) => (
+        <img
+          key={`${kind}-${index}`}
+          src={pieceImage({ color, kind })}
+          alt=""
+          className="size-4 shrink-0 object-contain"
+        />
+      ))}
+    </span>
   );
 }
 
@@ -238,7 +415,13 @@ function RematchPanel({ controls }: { controls: RematchControls }) {
   );
 }
 
-function ChatPanel({ chat }: { chat: ChatControls }) {
+function ChatPanel({
+  chat,
+  showLabel = true,
+}: {
+  chat: ChatControls;
+  showLabel?: boolean;
+}) {
   const [text, setText] = useState("");
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -248,7 +431,9 @@ function ChatPanel({ chat }: { chat: ChatControls }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2">
-      <span className="text-sm text-muted-foreground">Match Chat</span>
+      {showLabel ? (
+        <span className="text-sm text-muted-foreground">Match Chat</span>
+      ) : null}
       <ScrollArea className="min-h-24 flex-1 rounded-md bg-muted/15">
         <div className="flex flex-col gap-1.5 p-2 text-sm">
           {chat.messages.length === 0 ? (
@@ -297,11 +482,25 @@ function ChatPanel({ chat }: { chat: ChatControls }) {
   );
 }
 
-function LeaveButton({ onLeave }: { onLeave: () => void }) {
+function LeaveButton({
+  onLeave,
+  compact = false,
+}: {
+  onLeave: () => void;
+  compact?: boolean;
+}) {
   return (
     <AlertDialog>
-      <AlertDialogTrigger render={<Button variant="outline" className="w-full" />}>
-        Leave
+      <AlertDialogTrigger
+        render={
+          compact ? (
+            <Button size="icon-sm" variant="ghost" aria-label="Leave game" />
+          ) : (
+            <Button variant="outline" className="w-full" />
+          )
+        }
+      >
+        {compact ? <LogOut aria-hidden="true" /> : "Leave"}
       </AlertDialogTrigger>
       <AlertDialogPopup>
         <AlertDialogHeader>

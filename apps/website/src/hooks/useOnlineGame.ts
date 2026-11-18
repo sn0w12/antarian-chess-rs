@@ -6,7 +6,7 @@ import {
   type OnlineStatus,
 } from "antarian-chess";
 import { materialBalance } from "@/lib/engine";
-import { playGameStart, playMoveResult } from "@/lib/audio";
+import { playGameStart, playMove, playMoveResult } from "@/lib/audio";
 
 export interface ChatLine {
   from: string;
@@ -53,12 +53,9 @@ export function useOnlineGame() {
     } else {
       const last = previous[previous.length - 1];
       if (next.moveNumber > last.moveNumber) {
-        const following = viewRef.current === previous.length - 1;
         const updated = [...previous, next];
         historyRef.current = updated;
-        if (following) {
-          viewRef.current = updated.length - 1;
-        }
+        viewRef.current = updated.length - 1;
         playMoveResult(next);
       } else {
         const updated = previous.slice();
@@ -178,6 +175,9 @@ export function useOnlineGame() {
 
   const setView = useCallback((index: number) => {
     const clamped = Math.max(0, Math.min(index, historyRef.current.length - 1));
+    if (clamped !== viewRef.current) {
+      playMove();
+    }
     viewRef.current = clamped;
     setViewIndex(clamped);
     setSelected(null);

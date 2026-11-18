@@ -6,7 +6,7 @@ import {
   type Game,
   type GameState,
 } from "antarian-chess";
-import { playGameStart, playMoveResult } from "@/lib/audio";
+import { playGameStart, playMove, playMoveResult } from "@/lib/audio";
 import { botThinkTime, createGame, materialBalance } from "@/lib/engine";
 
 const INITIAL_CLOCK = 600;
@@ -55,12 +55,9 @@ export function useBotGame({ playerColor }: BotGameOptions) {
     } else {
       const last = previous[previous.length - 1];
       if (next.moveNumber > last.moveNumber) {
-        const following = viewRef.current === previous.length - 1;
         const updated = [...previous, next];
         historyRef.current = updated;
-        if (following) {
-          viewRef.current = updated.length - 1;
-        }
+        viewRef.current = updated.length - 1;
         playMoveResult(next);
       } else {
         const updated = previous.slice();
@@ -142,6 +139,9 @@ export function useBotGame({ playerColor }: BotGameOptions) {
 
   const setView = useCallback((index: number) => {
     const clamped = Math.max(0, Math.min(index, historyRef.current.length - 1));
+    if (clamped !== viewRef.current) {
+      playMove();
+    }
     viewRef.current = clamped;
     setViewIndex(clamped);
     setSelected(null);

@@ -5,7 +5,7 @@ import { Spinner } from "@/components/ui/spinner";
 
 function RouteFallback() {
   return (
-    <main className="flex min-h-screen items-center justify-center">
+    <main className="flex h-dvh items-center justify-center overflow-hidden">
       <Spinner aria-label="Loading page" />
     </main>
   );
@@ -13,7 +13,7 @@ function RouteFallback() {
 
 function NotFoundPage() {
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-4 px-6 text-center">
+    <main className="flex h-dvh flex-col items-center justify-center gap-4 overflow-y-auto px-6 text-center">
       <p className="font-mono text-sm text-muted-foreground">404</p>
       <h1 className="font-heading text-3xl font-semibold tracking-tight">
         That page does not exist
