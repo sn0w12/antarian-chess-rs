@@ -1,11 +1,12 @@
 use crate::{ChessApp, WsCommand, audio, dialogs::ConfirmDialogOptions};
-use chess_bot::Searcher;
+use chess_bot::{Searcher, evaluation::evaluate};
 use chess_engine::*;
 use chess_server::protocol::ClientMessage;
 use gpui::{
-    AnyElement, AppContext, AsyncApp, AvailableSpace, Context, Entity, Hsla, Image, ImageFormat,
-    IntoElement, ObjectFit, ParentElement, Pixels, Render, ScrollStrategy, SharedString, Size,
-    Styled, StyledImage, WeakEntity, Window, div, hsla, img, prelude::FluentBuilder, px, size,
+    AnyElement, AppContext, AsyncApp, AvailableSpace, Context, Entity, FocusHandle, Hsla, Image,
+    ImageFormat, InteractiveElement, IntoElement, ObjectFit, ParentElement, Pixels, Render,
+    ScrollStrategy, SharedString, Size, StatefulInteractiveElement, Styled, StyledImage, WeakEntity,
+    Window, div, hsla, img, prelude::FluentBuilder, px, relative, size,
 };
 use gpui_component::{
     ActiveTheme, VirtualListScrollHandle,
@@ -21,6 +22,8 @@ use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::mpsc;
+
+gpui::actions!(chess_board, [PrevMove, NextMove, FirstMove, LiveMove]);
 
 /// How much time the bot spends thinking per move.
 fn think_time(board: &Board, white_time: f64, black_time: f64, move_count: u32) -> Duration {
@@ -139,6 +142,34 @@ enum RematchState {
     Declined,
 }
 
+#[derive(Clone)]
+struct HistoryEntry {
+    board: Board,
+    last_move: Option<Move>,
+    captured_us: Vec<PieceKind>,
+    captured_opp: Vec<PieceKind>,
+    /// Evaluation in centipawns from White's perspective.
+    eval: i32,
+}
+
+#[derive(Clone, Copy)]
+struct DragPiece {
+    from: u8,
+}
+
+struct DragPreview {
+    image: Arc<Image>,
+    size: Pixels,
+}
+
+impl Render for DragPreview {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        img(self.image.clone())
+            .size(self.size)
+            .object_fit(ObjectFit::Contain)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ChessBoard entity
 // ---------------------------------------------------------------------------
@@ -148,6 +179,12 @@ pub struct ChessBoard {
     pub player_color: Color,
     selected_square: Option<usize>,
     legal_targets: Vec<u8>,
+
+    history: Vec<HistoryEntry>,
+    view_ply: usize,
+    focus_handle: FocusHandle,
+    dragging_from: Option<u8>,
+    square_px: Pixels,
 
     pub game_mode: GameMode,
     pub is_our_turn: bool,
@@ -167,11 +204,9 @@ pub struct ChessBoard {
     rematch_state: RematchState,
     timer_generation: u64,
 
-    pub bot_score: Option<i32>,
     pub bot_depth: Option<u32>,
     bot_searcher: Searcher,
 
-    last_move: Option<Move>,
     chat_messages: Vec<ChatEntry>,
     chat_input: Entity<InputState>,
     chat_scroll_handle: VirtualListScrollHandle,
@@ -183,12 +218,24 @@ pub struct ChessBoard {
 impl ChessBoard {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let chat_input = cx.new(|cx| InputState::new(window, cx).placeholder("Message opponent"));
+        let focus_handle = cx.focus_handle();
 
         Self {
             game_state: Board::initial(),
             player_color: Color::White,
             selected_square: None,
             legal_targets: Vec::new(),
+            history: vec![HistoryEntry {
+                board: Board::initial(),
+                last_move: None,
+                captured_us: Vec::new(),
+                captured_opp: Vec::new(),
+                eval: 0,
+            }],
+            view_ply: 0,
+            focus_handle,
+            dragging_from: None,
+            square_px: px(64.),
             game_mode: GameMode::Local,
             is_our_turn: true,
             status_message: "White to move".into(),
@@ -204,10 +251,8 @@ impl ChessBoard {
             leave_requested: false,
             rematch_state: RematchState::Hidden,
             timer_generation: 0,
-            bot_score: None,
             bot_depth: None,
             bot_searcher: Searcher::new(),
-            last_move: None,
             chat_messages: Vec::new(),
             chat_input,
             chat_scroll_handle: VirtualListScrollHandle::new(),
@@ -236,15 +281,138 @@ impl ChessBoard {
         self.online_tx = None;
         self.leave_requested = false;
         self.rematch_state = RematchState::Hidden;
-        self.bot_score = None;
         self.bot_depth = None;
         self.bot_searcher.clear();
-        self.last_move = None;
+        self.history = vec![HistoryEntry {
+            board: Board::initial(),
+            last_move: None,
+            captured_us: Vec::new(),
+            captured_opp: Vec::new(),
+            eval: 0,
+        }];
+        self.view_ply = 0;
+        self.dragging_from = None;
         self.chat_messages.clear();
         self.chat_item_sizes = Rc::new(Vec::new());
         self.chat_list_width = px(0.);
         self.pending_chat_scroll = false;
         self.refresh_status();
+    }
+
+    fn viewed(&self) -> &HistoryEntry {
+        &self.history[self.view_ply.min(self.history.len() - 1)]
+    }
+
+    fn is_reviewing(&self) -> bool {
+        self.view_ply + 1 < self.history.len()
+    }
+
+    fn can_move_now(&self) -> bool {
+        self.is_our_turn && !self.is_game_over() && !self.is_reviewing()
+    }
+
+    fn select_piece(&mut self, square: usize) {
+        if let Some((color, _)) = self.game_state.get(square)
+            && color == self.player_color
+        {
+            self.selected_square = Some(square);
+            self.legal_targets = self
+                .game_state
+                .generate_moves_for(square, false)
+                .into_iter()
+                .filter(|mv| {
+                    let child = self.game_state.make_move(mv);
+                    !child.is_in_check(self.player_color)
+                })
+                .map(|mv| mv.to)
+                .collect();
+        }
+    }
+
+    fn begin_drag(&mut self, square: usize) {
+        self.dragging_from = Some(square as u8);
+        self.select_piece(square);
+    }
+
+    fn is_legal_drop(&self, from: usize, to: usize) -> bool {
+        if !self.can_move_now() || from == to {
+            return false;
+        }
+        let Some((color, _)) = self.game_state.get(from) else {
+            return false;
+        };
+        if color != self.player_color {
+            return false;
+        }
+        let capture = self.game_state.get(to).is_some();
+        self.game_state
+            .generate_legal_moves(self.game_state.turn)
+            .contains(&Move::new(from as u8, to as u8, capture))
+    }
+
+    fn drop_piece(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        self.dragging_from = None;
+        if self.is_legal_drop(from, to) {
+            let capture = self.game_state.get(to).is_some();
+            self.exec_move(Move::new(from as u8, to as u8, capture), cx);
+        } else {
+            self.selected_square = None;
+            self.legal_targets.clear();
+            cx.notify();
+        }
+    }
+
+    /// Append the current position. The view follows when it was already at the
+    /// live position, or when the opponent just moved.
+    fn record_move(&mut self, mv: Move, eval: i32, follow_live: bool) {
+        let following = follow_live || self.view_ply + 1 == self.history.len();
+        self.history.push(HistoryEntry {
+            board: self.game_state.clone(),
+            last_move: Some(mv),
+            captured_us: self.captured_us.clone(),
+            captured_opp: self.captured_opp.clone(),
+            eval,
+        });
+        if following {
+            self.view_ply = self.history.len() - 1;
+        }
+    }
+
+    pub fn step_back(&mut self, cx: &mut Context<Self>) {
+        if self.view_ply > 0 {
+            self.view_ply -= 1;
+            self.selected_square = None;
+            self.legal_targets.clear();
+            cx.notify();
+        }
+    }
+
+    pub fn step_forward(&mut self, cx: &mut Context<Self>) {
+        if self.view_ply + 1 < self.history.len() {
+            self.view_ply += 1;
+            self.selected_square = None;
+            self.legal_targets.clear();
+            cx.notify();
+        }
+    }
+
+    pub fn go_to_start(&mut self, cx: &mut Context<Self>) {
+        if self.view_ply != 0 {
+            self.view_ply = 0;
+            self.selected_square = None;
+            self.legal_targets.clear();
+            cx.notify();
+        }
+    }
+
+    pub fn go_to_live(&mut self, cx: &mut Context<Self>) {
+        let last = self.history.len().saturating_sub(1);
+        if self.view_ply != last {
+            self.view_ply = last;
+            self.selected_square = None;
+            self.legal_targets.clear();
+            cx.notify();
+        }
     }
 
     /// Start the per‑player countdown clock. Call once after `start_game`.
@@ -418,7 +586,7 @@ impl ChessBoard {
     }
 
     pub fn handle_square_click(&mut self, square: usize, cx: &mut Context<Self>) {
-        if !self.is_our_turn || self.is_game_over() {
+        if !self.can_move_now() {
             return;
         }
 
@@ -434,17 +602,7 @@ impl ChessBoard {
         if let Some((color, _)) = self.game_state.get(square)
             && color == self.player_color
         {
-            self.selected_square = Some(square);
-            self.legal_targets = self
-                .game_state
-                .generate_moves_for(square, false)
-                .into_iter()
-                .filter(|mv| {
-                    let child = self.game_state.make_move(mv);
-                    !child.is_in_check(self.player_color)
-                })
-                .map(|mv| mv.to)
-                .collect();
+            self.select_piece(square);
             cx.notify();
             return;
         }
@@ -459,11 +617,11 @@ impl ChessBoard {
         if was_capture && let Some((_, kind)) = self.game_state.get(mv.to as usize) {
             self.captured_opp.push(kind);
         }
-        self.last_move = Some(mv);
         self.game_state = self.game_state.make_move(&mv);
         self.selected_square = None;
         self.legal_targets.clear();
         self.move_count += 1;
+        self.record_move(mv, evaluate(&self.game_state), false);
         self.refresh_status();
         self.play_sound(was_capture);
 
@@ -499,9 +657,9 @@ impl ChessBoard {
         if was_capture && let Some((_, kind)) = self.game_state.get(mv.to as usize) {
             self.captured_us.push(kind);
         }
-        self.last_move = Some(mv);
         self.game_state = self.game_state.make_move(&mv);
         self.move_count += 1;
+        self.record_move(mv, evaluate(&self.game_state), true);
         self.refresh_status();
         self.play_sound(was_capture);
         cx.notify();
@@ -560,13 +718,14 @@ impl ChessBoard {
         if was_capture && let Some((_, kind)) = self.game_state.get(mv.to as usize) {
             self.captured_us.push(kind);
         }
-        self.last_move = Some(mv);
-        self.bot_score = Some(result.score * self.game_state.turn.multiplier());
+        // The bot's score is for the position before its move, from its side.
+        let eval = result.score * self.game_state.turn.multiplier();
         self.bot_depth = Some(result.depth);
         self.game_state = self.game_state.make_move(&mv);
         self.selected_square = None;
         self.legal_targets.clear();
         self.move_count += 1;
+        self.record_move(mv, eval, true);
         self.refresh_status();
         self.play_sound(was_capture);
         cx.notify();
@@ -684,9 +843,20 @@ impl Render for ChessBoard {
         }
 
         let flip = self.player_color == Color::White;
+        if !cx.has_active_drag() {
+            self.dragging_from = None;
+        }
         h_flex()
             .size_full()
             .gap_2()
+            .id("chess-board")
+            .track_focus(&self.focus_handle)
+            .key_context("ChessBoard")
+            .on_action(cx.listener(|this, _: &PrevMove, _window, cx| this.step_back(cx)))
+            .on_action(cx.listener(|this, _: &NextMove, _window, cx| this.step_forward(cx)))
+            .on_action(cx.listener(|this, _: &FirstMove, _window, cx| this.go_to_start(cx)))
+            .on_action(cx.listener(|this, _: &LiveMove, _window, cx| this.go_to_live(cx)))
+            .child(eval_bar(self, flip, cx))
             .child(board_view(self, flip, cx))
             .child(sidebar(self, window, cx))
     }
@@ -713,8 +883,36 @@ fn lm() -> Hsla {
     hsla(0.12, 0.50, 0.70, 1.0)
 }
 
+fn eval_bar(this: &ChessBoard, flip: bool, cx: &Context<ChessBoard>) -> AnyElement {
+    let t = cx.theme();
+    let eval = this.viewed().eval as f32;
+    let white = (1.0 / (1.0 + (-eval / 400.0).exp())).clamp(0.03, 0.97);
+
+    let white_color = hsla(0.0, 0.0, 0.97, 1.0);
+    let black_color = hsla(0.0, 0.0, 0.13, 1.0);
+    // Keep the white end on the side of the board white is playing from.
+    let (top_color, top_grow, bottom_color, bottom_grow) = if flip {
+        (black_color, 1.0 - white, white_color, white)
+    } else {
+        (white_color, white, black_color, 1.0 - white)
+    };
+
+    v_flex()
+        .h_full()
+        .w(px(18.))
+        .flex_shrink_0()
+        .rounded_sm()
+        .overflow_hidden()
+        .border_1()
+        .border_color(t.border)
+        .child(div().w_full().h(relative(top_grow)).bg(top_color))
+        .child(div().w_full().h(relative(bottom_grow)).bg(bottom_color))
+        .into_any_element()
+}
+
 fn board_view(this: &ChessBoard, flip: bool, cx: &Context<ChessBoard>) -> AnyElement {
-    let sqs = this.game_state.squares();
+    let entry = this.viewed();
+    let sqs = entry.board.squares();
 
     div()
         .h_full()
@@ -726,15 +924,23 @@ fn board_view(this: &ChessBoard, flip: bool, cx: &Context<ChessBoard>) -> AnyEle
                 .grid_cols(8)
                 .grid_rows(8)
                 .gap_0()
+                .on_children_prepainted({
+                    let weak = cx.weak_entity();
+                    move |bounds, _window, cx| {
+                        if let Some(width) = bounds.first().map(|b| b.size.width) {
+                            let _ = weak.update(cx, |this, _| this.square_px = width);
+                        }
+                    }
+                })
                 .children(sqs.iter().enumerate().map(|(i, _)| {
                     let bi = if flip { 63 - i } else { i };
-                    let piece = sqs[bi].map(|(c, p)| piece_image(p, c));
+                    let piece = sqs[bi];
                     let mut bg = if (i / 8 + i % 8) % 2 == 0 {
                         lsq()
                     } else {
                         dsq()
                     };
-                    if let Some(last) = this.last_move {
+                    if let Some(last) = entry.last_move {
                         if bi == last.from as usize || bi == last.to as usize {
                             bg = lm();
                         }
@@ -742,11 +948,17 @@ fn board_view(this: &ChessBoard, flip: bool, cx: &Context<ChessBoard>) -> AnyEle
                     let selected = this.selected_square == Some(bi);
                     let target = this.legal_targets.contains(&(bi as u8));
                     let weak = cx.weak_entity();
+                    let click_weak = weak.clone();
+                    let drop_weak = weak.clone();
+                    let can_weak = weak.clone();
+                    let drag_weak = weak.clone();
+                    let over_weak = weak;
+                    let focus = this.focus_handle.clone();
+                    let preview_px = this.square_px;
                     let sq = bi;
 
-                    Button::new(format!("s{sq}"))
-                        .p_0()
-                        .rounded_none()
+                    let mut square = div()
+                        .id(SharedString::from(format!("square-{sq}")))
                         .size_full()
                         .flex()
                         .items_center()
@@ -754,29 +966,75 @@ fn board_view(this: &ChessBoard, flip: bool, cx: &Context<ChessBoard>) -> AnyEle
                         .bg(if target && piece.is_none() { leg() } else { bg })
                         .border_2()
                         .border_color(if selected { sel() } else { bg })
-                        .on_click(move |_, _window, cx| {
-                            let _ = weak.update(cx, |this, cx| {
+                        .on_click(move |_, window, cx| {
+                            focus.focus(window, cx);
+                            let _ = click_weak.update(cx, |this, cx| {
                                 this.handle_square_click(sq, cx);
                             });
                         })
-                        .child(if let Some(im) = piece {
-                            if target {
-                                div()
-                                    .size_full()
-                                    .bg(leg())
-                                    .border_2()
-                                    .border_color(dot())
-                                    .child(img(im).size_full().object_fit(ObjectFit::Contain))
-                            } else {
-                                div()
-                                    .size_full()
-                                    .child(img(im).size_full().object_fit(ObjectFit::Contain))
-                            }
-                        } else if target {
-                            div().size(px(20.)).rounded_full().bg(dot())
+                        .on_drop(move |drag: &DragPiece, _window, cx| {
+                            let _ = drop_weak.update(cx, |this, cx| {
+                                this.drop_piece(drag.from as usize, sq, cx);
+                            });
+                        })
+                        .can_drop(move |dragged, _window, cx| {
+                            let Some(drag) = dragged.downcast_ref::<DragPiece>() else {
+                                return false;
+                            };
+                            can_weak.upgrade().is_some_and(|this| {
+                                this.read(cx).is_legal_drop(drag.from as usize, sq)
+                            })
+                        })
+                        .drag_over::<DragPiece>(move |style, drag, _window, cx| {
+                            let legal = over_weak.upgrade().is_some_and(|this| {
+                                this.read(cx).is_legal_drop(drag.from as usize, sq)
+                            });
+                            if legal { style.bg(sel()) } else { style }
+                        });
+
+                    if let Some((color, kind)) = piece
+                        && color == this.player_color
+                        && this.can_move_now()
+                    {
+                        let drag_image = piece_image(kind, color);
+                        square = square.on_drag(
+                            DragPiece { from: sq as u8 },
+                            move |_drag, _offset, _window, cx| {
+                                if let Some(this) = drag_weak.upgrade() {
+                                    let _ = this.update(cx, |this, cx| {
+                                        this.begin_drag(sq);
+                                        cx.notify();
+                                    });
+                                }
+                                cx.new(|_| DragPreview {
+                                    image: drag_image.clone(),
+                                    size: preview_px,
+                                })
+                            },
+                        );
+                    }
+
+                    let hidden = this.dragging_from == Some(sq as u8);
+                    square.child(if hidden {
+                        div()
+                    } else if let Some(im) = piece.map(|(c, p)| piece_image(p, c)) {
+                        if target {
+                            div()
+                                .size_full()
+                                .bg(leg())
+                                .border_2()
+                                .border_color(dot())
+                                .child(img(im).size_full().object_fit(ObjectFit::Contain))
                         } else {
                             div()
-                        })
+                                .size_full()
+                                .child(img(im).size_full().object_fit(ObjectFit::Contain))
+                        }
+                    } else if target {
+                        div().size(px(20.)).rounded_full().bg(dot())
+                    } else {
+                        div()
+                    })
                 })),
         )
         .into_any_element()
@@ -784,6 +1042,19 @@ fn board_view(this: &ChessBoard, flip: bool, cx: &Context<ChessBoard>) -> AnyEle
 
 fn sidebar(this: &ChessBoard, _window: &mut Window, cx: &mut Context<ChessBoard>) -> AnyElement {
     let t = cx.theme();
+    let entry = this.viewed();
+    let total_plies = this.history.len().saturating_sub(1);
+    let reviewing = this.is_reviewing();
+    let moves_str = if reviewing {
+        format!("{} / {}", this.view_ply, total_plies)
+    } else {
+        total_plies.to_string()
+    };
+    let status_text = if reviewing {
+        format!("Viewing move {} of {}", this.view_ply, total_plies)
+    } else {
+        this.status_message.clone()
+    };
     let mode = match this.game_mode {
         GameMode::Bot => "vs Bot",
         GameMode::Online => "Online",
@@ -805,7 +1076,7 @@ fn sidebar(this: &ChessBoard, _window: &mut Window, cx: &mut Context<ChessBoard>
         .child(detail(t, "Mode", mode))
         .child(detail(t, "You", you))
         .child(detail(t, "Opponent", &this.opponent_name))
-        .child(detail(t, "Moves", &this.move_count.to_string()))
+        .child(detail(t, "Moves", &moves_str))
         .child(Separator::horizontal().w_full())
         .child(
             div()
@@ -817,18 +1088,18 @@ fn sidebar(this: &ChessBoard, _window: &mut Window, cx: &mut Context<ChessBoard>
                     t.muted.opacity(0.4)
                 })
                 .text_color(t.foreground)
-                .child(this.status_message.clone()),
+                .child(status_text),
         )
         .children(this.can_offer_rematch().then(|| rematch_panel(this, cx)))
         .child(Separator::horizontal().w_full())
         .children((this.game_mode == GameMode::Bot).then(|| {
-            let score_str = this.bot_score.map(fmt_score).unwrap_or_default();
+            let score_str = fmt_score(this.viewed().eval);
             let depth_str = this.bot_depth.map(|d| format!("{d}")).unwrap_or_default();
             v_flex()
                 .w_full()
                 .px_2()
                 .gap_1()
-                .child(detail(t, "Bot Eval (White)", &score_str))
+                .child(detail(t, "Eval (White)", &score_str))
                 .child(detail(t, "Search Depth", &depth_str))
         }))
         .child(Separator::horizontal().w_full())
@@ -941,7 +1212,7 @@ fn sidebar(this: &ChessBoard, _window: &mut Window, cx: &mut Context<ChessBoard>
             h_flex()
                 .gap_2()
                 .flex_wrap()
-                .children(this.captured_us.iter().map(|k| {
+                .children(entry.captured_us.iter().map(|k| {
                     div()
                         .rounded_sm()
                         .bg(t.primary.opacity(0.15))
@@ -957,7 +1228,7 @@ fn sidebar(this: &ChessBoard, _window: &mut Window, cx: &mut Context<ChessBoard>
             h_flex()
                 .gap_2()
                 .flex_wrap()
-                .children(this.captured_opp.iter().map(|k| {
+                .children(entry.captured_opp.iter().map(|k| {
                     div()
                         .rounded_sm()
                         .bg(t.danger.opacity(0.15))

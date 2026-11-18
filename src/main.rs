@@ -12,9 +12,9 @@ use chess_server::protocol::{ClientInfo, ClientMessage, LobbySummary, ServerMess
 use futures_util::{SinkExt, StreamExt};
 use gpui::{
     App, AppContext, AsyncApp, Bounds, Context, Entity, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, ParentElement, Pixels, Render, SharedString, Size, Styled, Subscription,
-    TitlebarOptions, UniformListScrollHandle, Window, WindowBounds, WindowOptions, div, px,
-    uniform_list,
+    IntoElement, KeyBinding, ParentElement, Pixels, Render, SharedString, Size, Styled,
+    Subscription, TitlebarOptions, UniformListScrollHandle, Window, WindowBounds, WindowOptions,
+    div, px, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable, Root, Sizable, TitleBar,
@@ -41,7 +41,9 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
-use crate::components::chess_board::{ChessBoard, GameMode};
+use crate::components::chess_board::{
+    ChessBoard, FirstMove, GameMode, LiveMove, NextMove, PrevMove,
+};
 
 const WS_URL: &str = "wss://chess.arathia.net/";
 const PROTOCOL_VERSION: u32 = 1;
@@ -1086,6 +1088,13 @@ fn main() {
     app.run(move |cx: &mut App| {
         gpui_component::init(cx);
         theme::init(cx);
+
+        cx.bind_keys([
+            KeyBinding::new("left", PrevMove, Some("ChessBoard")),
+            KeyBinding::new("right", NextMove, Some("ChessBoard")),
+            KeyBinding::new("home", FirstMove, Some("ChessBoard")),
+            KeyBinding::new("end", LiveMove, Some("ChessBoard")),
+        ]);
 
         cx.activate(true);
         if let Err(error) = cx.open_window(
