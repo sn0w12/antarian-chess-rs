@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+#[cfg_attr(feature = "export-ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "export-ts", ts(export_to = "protocol.ts"))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientInfo {
     /// App version sent by the client binary.
@@ -18,6 +20,8 @@ pub struct ClientInfo {
     pub protocol_version: u32,
 }
 
+#[cfg_attr(feature = "export-ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "export-ts", ts(export_to = "protocol.ts"))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LobbySummary {
     /// Stable lobby code used internally and for private invites.
@@ -27,6 +31,8 @@ pub struct LobbySummary {
 }
 
 /// Every message a client sends to the server.
+#[cfg_attr(feature = "export-ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "export-ts", ts(export_to = "protocol.ts"))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ClientMessage {
@@ -99,6 +105,8 @@ pub enum ClientMessage {
 }
 
 /// Every message the server sends to a client.
+#[cfg_attr(feature = "export-ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "export-ts", ts(export_to = "protocol.ts"))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ServerMessage {
@@ -157,6 +165,7 @@ pub enum ServerMessage {
         /// Whether this client won ("win"), lost ("loss"), or it was a draw
         /// ("draw" — currently unused but reserved).
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "export-ts", ts(optional))]
         result: Option<String>,
     },
     /// The opponent is asking for a rematch.
