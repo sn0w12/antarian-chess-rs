@@ -418,7 +418,6 @@ function OnlineGame({
     over,
     result: game.lastResult,
     reason: game.lastReason,
-    flagged: game.flagged,
   });
 
   return (
@@ -450,11 +449,15 @@ function OnlineGame({
           }}
           status={status}
           yourTurn={game.interactive}
-          clocks={{
-            white: formatClock(game.clocks.white),
-            black: formatClock(game.clocks.black),
-            active: live.turn,
-          }}
+          clocks={
+            game.clock
+              ? {
+                  white: formatClock(game.clock.whiteMs / 1000),
+                  black: formatClock(game.clock.blackMs / 1000),
+                  active: game.clock.turn,
+                }
+              : undefined
+          }
           chat={{
             messages: game.chat,
             onSend: game.sendChat,

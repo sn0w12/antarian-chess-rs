@@ -57,14 +57,12 @@ export function onlineGameResult({
   over,
   result,
   reason,
-  flagged,
 }: {
   live: GameState;
   color: Color;
   over: boolean;
   result: string | null;
   reason: string | null;
-  flagged?: Color | null;
 }): GameResult | null {
   if (live.status.kind === "checkmate") {
     const won = live.status.winner === color;
@@ -87,18 +85,6 @@ export function onlineGameResult({
     };
   }
 
-  if (flagged) {
-    const lost = flagged === color;
-    return {
-      id: `flagged-${flagged}`,
-      tone: lost ? "loss" : "win",
-      title: lost ? "You lost on time" : "You won on time",
-      description: lost
-        ? "Your clock ran out."
-        : "Your opponent's clock ran out.",
-    };
-  }
-
   if (!over) {
     return null;
   }
@@ -113,19 +99,21 @@ export function onlineGameResult({
   }
 
   if (result === "win") {
+    const onTime = reason === "timeout" || reason === "time_out";
     return {
       id: `win-${reason ?? "game-over"}`,
       tone: "win",
-      title: "You won",
+      title: onTime ? "You won on time" : "You won",
       description: endDescription("win", reason),
     };
   }
 
   if (result === "loss") {
+    const onTime = reason === "timeout" || reason === "time_out";
     return {
       id: `loss-${reason ?? "game-over"}`,
       tone: "loss",
-      title: "You lost",
+      title: onTime ? "You lost on time" : "You lost",
       description: endDescription("loss", reason),
     };
   }

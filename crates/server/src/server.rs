@@ -2,8 +2,10 @@ use crate::protocol::{ClientInfo, ClientMessage, LobbySummary, ServerMessage};
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::sync::{RwLock, mpsc};
+use tokio::time::MissedTickBehavior;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
@@ -15,6 +17,9 @@ use uuid::Uuid;
 type PlayerId = String;
 type GameId = String;
 type LobbyCode = String;
+
+const INITIAL_CLOCK_MS: u64 = 600_000;
+const CLOCK_TICK: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, PartialEq)]
 enum PlayerState {
@@ -40,6 +45,63 @@ struct Game {
     over: bool,
     /// Player id who has asked for a rematch (if any).
     rematch_requester: Option<PlayerId>,
+    /// Number of plies played. White moves on even counts.
+    plies: u32,
+    white_ms: u64,
+    black_ms: u64,
+    /// `None` until the first move; clocks stay at 10:00 before that.
+    turn_started: Option<Instant>,
+}
+
+impl Game {
+    fn turn(&self) -> &'static str {
+        if self.plies % 2 == 0 { "white" } else { "black" }
+    }
+
+    fn clocks(&self, now: Instant) -> (u64, u64) {
+        let Some(started) = self.turn_started else {
+            return (self.white_ms, self.black_ms);
+        };
+        let elapsed = now.saturating_duration_since(started).as_millis() as u64;
+        if self.plies % 2 == 0 {
+            (self.white_ms.saturating_sub(elapsed), self.black_ms)
+        } else {
+            (self.white_ms, self.black_ms.saturating_sub(elapsed))
+        }
+    }
+
+    fn commit_move(&mut self, now: Instant) {
+        if let Some(started) = self.turn_started {
+            let elapsed = now.saturating_duration_since(started).as_millis() as u64;
+            if self.plies % 2 == 0 {
+                self.white_ms = self.white_ms.saturating_sub(elapsed);
+            } else {
+                self.black_ms = self.black_ms.saturating_sub(elapsed);
+            }
+        }
+        self.plies += 1;
+        self.turn_started = Some(now);
+    }
+}
+
+fn clock_message(game: &Game, now: Instant) -> ServerMessage {
+    let (white_ms, black_ms) = game.clocks(now);
+    ServerMessage::GameClock {
+        game_id: game.id.clone(),
+        white_ms: white_ms as u32,
+        black_ms: black_ms as u32,
+        turn: game.turn().into(),
+    }
+}
+
+fn send_clock_inner(inner: &ServerInner, game: &Game, now: Instant) {
+    let payload = clock_message(game, now);
+    if let Some(player) = inner.players.get(&game.white_id) {
+        let _ = player.tx.send(payload.clone());
+    }
+    if let Some(player) = inner.players.get(&game.black_id) {
+        let _ = player.tx.send(payload);
+    }
 }
 
 struct Lobby {
@@ -433,6 +495,10 @@ impl GameServer {
                 black_id: p2_id.to_string(),
                 over: false,
                 rematch_requester: None,
+                plies: 0,
+                white_ms: INITIAL_CLOCK_MS,
+                black_ms: INITIAL_CLOCK_MS,
+                turn_started: None,
             },
         );
 
@@ -447,41 +513,187 @@ impl GameServer {
         if let Some(p) = inner.players.get_mut(p2_id) {
             p.state = PlayerState::InGame(game_id.clone());
             let _ = p.tx.send(ServerMessage::MatchFound {
-                game_id,
+                game_id: game_id.clone(),
                 opponent_name: p1_name,
                 your_color: "black".into(),
             });
         }
+        if let Some(game) = inner.games.get(&game_id) {
+            send_clock_inner(inner, game, Instant::now());
+        }
+        self.spawn_clock_task(game_id);
+    }
+
+    fn spawn_clock_task(&self, game_id: GameId) {
+        let server = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(CLOCK_TICK);
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                let mut timed_out = false;
+                {
+                    let inner = server.inner.read().await;
+                    let Some(game) = inner.games.get(&game_id) else {
+                        return;
+                    };
+                    if game.over {
+                        return;
+                    }
+                    if game.turn_started.is_some() {
+                        let now = Instant::now();
+                        let (white_ms, black_ms) = game.clocks(now);
+                        send_clock_inner(&inner, game, now);
+                        timed_out = white_ms == 0 || black_ms == 0;
+                    }
+                }
+                if timed_out {
+                    server.handle_timeout(&game_id).await;
+                    return;
+                }
+            }
+        });
+    }
+
+    async fn handle_timeout(&self, game_id: &str) {
+        let mut inner = self.inner.write().await;
+        let flagged = {
+            let Some(game) = inner.games.get(game_id) else {
+                return;
+            };
+            if game.over || game.turn_started.is_none() {
+                return;
+            }
+            let (white_ms, black_ms) = game.clocks(Instant::now());
+            match game.turn() {
+                "white" if white_ms == 0 => "white",
+                "black" if black_ms == 0 => "black",
+                _ => return,
+            }
+        };
+        Self::finish_timeout_inner(&mut inner, game_id, flagged);
+    }
+
+    fn finish_timeout_inner(inner: &mut ServerInner, game_id: &str, flagged: &str) -> bool {
+        let now = Instant::now();
+        let (white_id, black_id) = {
+            let Some(game) = inner.games.get_mut(game_id) else {
+                return false;
+            };
+            if game.over || game.turn_started.is_none() || game.turn() != flagged {
+                return false;
+            }
+            let (white_ms, black_ms) = game.clocks(now);
+            let expired = if flagged == "white" {
+                white_ms == 0
+            } else {
+                black_ms == 0
+            };
+            if !expired {
+                return false;
+            }
+            game.over = true;
+            (game.white_id.clone(), game.black_id.clone())
+        };
+
+        let winner = if flagged == "white" { "black" } else { "white" };
+        for (id, color) in [(&white_id, "white"), (&black_id, "black")] {
+            if let Some(player) = inner.players.get_mut(id) {
+                player.state = PlayerState::GameOver(game_id.to_string());
+                let result = if color == winner { "win" } else { "loss" };
+                let _ = player.tx.send(ServerMessage::GameOver {
+                    game_id: game_id.to_string(),
+                    reason: "timeout".into(),
+                    result: Some(result.into()),
+                });
+            }
+        }
+        true
     }
 
     // ---- Game actions ----
 
     /// Forward a move from one player to the opponent in the specified game.
     pub async fn handle_move(&self, player_id: &str, game_id: &str, from: u8, to: u8) {
-        let inner = self.inner.read().await;
+        let mut inner = self.inner.write().await;
+        let now = Instant::now();
+        let mut timeout_side: Option<&'static str> = None;
+        let mut outgoing: Option<(
+            PlayerId,
+            PlayerId,
+            PlayerId,
+            ServerMessage,
+            ServerMessage,
+        )> = None;
 
-        let game = match inner.games.get(game_id) {
-            Some(g) => g,
-            None => return,
-        };
-        if game.over {
+        {
+            let Some(game) = inner.games.get_mut(game_id) else {
+                return;
+            };
+            if game.over {
+                return;
+            }
+
+            let is_white = game.white_id == player_id;
+            let is_black = game.black_id == player_id;
+            if !is_white && !is_black {
+                return;
+            }
+            let mover = if is_white { "white" } else { "black" };
+            if game.turn() != mover {
+                return;
+            }
+
+            if game.turn_started.is_some() {
+                let (white_ms, black_ms) = game.clocks(now);
+                let expired = if is_white {
+                    white_ms == 0
+                } else {
+                    black_ms == 0
+                };
+                if expired {
+                    timeout_side = Some(mover);
+                }
+            }
+
+            if timeout_side.is_none() {
+                game.commit_move(now);
+                let white_id = game.white_id.clone();
+                let black_id = game.black_id.clone();
+                let opponent_id = if is_white {
+                    black_id.clone()
+                } else {
+                    white_id.clone()
+                };
+                outgoing = Some((
+                    white_id,
+                    black_id,
+                    opponent_id,
+                    ServerMessage::OpponentMove {
+                        game_id: game.id.clone(),
+                        from,
+                        to,
+                    },
+                    clock_message(game, now),
+                ));
+            }
+        }
+
+        if let Some(flagged) = timeout_side {
+            Self::finish_timeout_inner(&mut inner, game_id, flagged);
             return;
         }
 
-        let opponent_id = if game.white_id == player_id {
-            &game.black_id
-        } else if game.black_id == player_id {
-            &game.white_id
-        } else {
-            return;
-        };
-
-        if let Some(opponent) = inner.players.get(opponent_id) {
-            let _ = opponent.tx.send(ServerMessage::OpponentMove {
-                game_id: game_id.to_string(),
-                from,
-                to,
-            });
+        if let Some((white_id, black_id, opponent_id, move_message, clock)) = outgoing {
+            if let Some(opponent) = inner.players.get(&opponent_id) {
+                let _ = opponent.tx.send(move_message);
+            }
+            if let Some(player) = inner.players.get(&white_id) {
+                let _ = player.tx.send(clock.clone());
+            }
+            if let Some(player) = inner.players.get(&black_id) {
+                let _ = player.tx.send(clock);
+            }
         }
     }
 
@@ -643,6 +855,10 @@ impl GameServer {
                 black_id: p2_id.clone(),
                 over: false,
                 rematch_requester: None,
+                plies: 0,
+                white_ms: INITIAL_CLOCK_MS,
+                black_ms: INITIAL_CLOCK_MS,
+                turn_started: None,
             },
         );
 
@@ -658,13 +874,18 @@ impl GameServer {
             p.state = PlayerState::InGame(new_game_id.clone());
             let _ = p.tx.send(ServerMessage::RematchAccepted {
                 old_game_id: old_gid.clone(),
-                new_game_id,
+                new_game_id: new_game_id.clone(),
                 your_color: "black".into(),
             });
         }
 
         // Remove the old game entry
         inner.games.remove(&old_gid);
+
+        if let Some(game) = inner.games.get(&new_game_id) {
+            send_clock_inner(&inner, game, Instant::now());
+        }
+        self.spawn_clock_task(new_game_id);
     }
 
     pub async fn decline_rematch(&self, player_id: &str, game_id: &str) {

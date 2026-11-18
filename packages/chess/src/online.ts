@@ -72,6 +72,12 @@ function randomId(): string {
     return `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
+export interface GameClockState {
+    whiteMs: number;
+    blackMs: number;
+    turn: Color;
+}
+
 export class OnlineClient {
     /** Assigned by the server after the handshake. */
     playerId = "";
@@ -81,6 +87,7 @@ export class OnlineClient {
     gameId: string | null = null;
     opponentName: string | null = null;
     color: Color | null = null;
+    clock: GameClockState | null = null;
     lobbyCode: string | null = null;
     lobbies: LobbySummary[] = [];
     status: OnlineStatus = "idle";
@@ -356,6 +363,15 @@ export class OnlineClient {
                     this.game.move(message.data.from, message.data.to);
                 }
                 break;
+            case "GameClock":
+                if (message.data.game_id === this.gameId) {
+                    this.clock = {
+                        whiteMs: message.data.white_ms,
+                        blackMs: message.data.black_ms,
+                        turn: message.data.turn === "black" ? "black" : "white",
+                    };
+                }
+                break;
             case "GameOver":
                 if (message.data.game_id === this.gameId) {
                     this.status = "over";
@@ -408,6 +424,7 @@ export class OnlineClient {
         this.gameId = gameId;
         this.opponentName = opponentName;
         this.color = color === "white" ? "white" : "black";
+        this.clock = null;
         this.status = "playing";
         this.rematchRequested = false;
         this.lastResult = null;

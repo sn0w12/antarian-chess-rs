@@ -148,13 +148,30 @@ from: number,
 /**
  * Destination square.
  */
-to: number, } } | { "type": "GameOver", "data": { 
+to: number, } } | { "type": "GameClock", "data": { 
+/**
+ * The game these clocks belong to.
+ */
+game_id: string, 
+/**
+ * Remaining milliseconds for White.
+ */
+white_ms: number, 
+/**
+ * Remaining milliseconds for Black.
+ */
+black_ms: number, 
+/**
+ * Colour to move ("white" or "black").
+ */
+turn: string, } } | { "type": "GameOver", "data": { 
 /**
  * The game that ended.
  */
 game_id: string, 
 /**
- * Why the game ended ("resign", "disconnect", "decline_rematch").
+ * Why the game ended ("resign", "disconnect", "timeout",
+ * "decline_rematch").
  */
 reason: string, 
 /**

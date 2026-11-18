@@ -158,11 +158,23 @@ pub enum ServerMessage {
         /// Destination square.
         to: u8,
     },
+    /// Remaining time on both clocks.
+    GameClock {
+        /// The game these clocks belong to.
+        game_id: String,
+        /// Remaining milliseconds for White.
+        white_ms: u32,
+        /// Remaining milliseconds for Black.
+        black_ms: u32,
+        /// Colour to move ("white" or "black").
+        turn: String,
+    },
     /// The game has ended.
     GameOver {
         /// The game that ended.
         game_id: String,
-        /// Why the game ended ("resign", "disconnect", "decline_rematch").
+        /// Why the game ended ("resign", "disconnect", "timeout",
+        /// "decline_rematch").
         reason: String,
         /// Whether this client won ("win"), lost ("loss"), or it was a draw
         /// ("draw" — currently unused but reserved).

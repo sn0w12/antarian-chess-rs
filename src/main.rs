@@ -552,11 +552,10 @@ impl ChessApp {
                     Color::Black
                 };
                 let tx = self.online_tx.clone();
-                self.board.update(cx, |board, cx| {
+                self.board.update(cx, |board, _cx| {
                     board.game_id = Some(game_id);
                     board.start_game(GameMode::Online, color, &opponent_name);
                     board.online_tx = tx;
-                    board.start_timer(cx);
                 });
                 self.active_lobby_code = None;
                 self.online_intent = None;
@@ -606,7 +605,7 @@ impl ChessApp {
                     Color::Black
                 };
                 let tx = self.online_tx.clone();
-                self.board.update(cx, |board, cx| {
+                self.board.update(cx, |board, _cx| {
                     if board.game_id.as_deref() != Some(old_game_id.as_str()) {
                         return;
                     }
@@ -616,7 +615,6 @@ impl ChessApp {
                     board.start_game(GameMode::Online, color, &opponent_name);
                     board.online_tx = tx;
                     board.push_system_chat_message("Rematch started.".to_string());
-                    board.start_timer(cx);
                 });
                 self.view = View::Playing;
                 cx.notify();
@@ -653,6 +651,17 @@ impl ChessApp {
                         "You".to_string()
                     };
                     board.push_chat_message(sender_name, message);
+                    cx.notify();
+                });
+            }
+            ServerMessage::GameClock {
+                white_ms,
+                black_ms,
+                ..
+            } => {
+                self.board.update(cx, |board, cx| {
+                    board.white_time = white_ms as f64 / 1000.0;
+                    board.black_time = black_ms as f64 / 1000.0;
                     cx.notify();
                 });
             }
