@@ -189,16 +189,6 @@ fn king_safety(board: &Board, color: Color, emperor_sq: usize) -> i32 {
 }
 
 // ---------------------------------------------------------------------------
-// Mobility
-// ---------------------------------------------------------------------------
-
-/// Small bonus for having more moves (pseudo-legal is cheap enough).
-fn mobility(board: &Board, color: Color) -> i32 {
-    let n = board.count_all_moves(color) as i32;
-    (n * 2).min(60)
-}
-
-// ---------------------------------------------------------------------------
 // Main tapered evaluation
 // ---------------------------------------------------------------------------
 
@@ -272,12 +262,6 @@ pub fn evaluate(board: &Board) -> i32 {
         score_mg += king_safety(board, Color::Black, sq) * 2;
     }
 
-    // ----- mobility (both phases) -----
-    let mob_w = mobility(board, Color::White);
-    let mob_b = mobility(board, Color::Black);
-    score_mg += mob_w - mob_b;
-    score_eg += (mob_w - mob_b) / 2; // less important in endgame
-
     // ----- endgame conversion: drive a bare emperor to the edge -----
     let advantage = material[0] - material[1];
     if advantage >= 400
@@ -298,15 +282,21 @@ pub fn evaluate(board: &Board) -> i32 {
 }
 
 pub(crate) fn has_major_piece(board: &Board, color: Color) -> bool {
-    (0..64).any(|sq| {
-        matches!(
-            board.get(sq),
-            Some((
-                c,
+    let mut occupied = board.occupied();
+    while occupied != 0 {
+        let sq = occupied.trailing_zeros() as usize;
+        occupied &= occupied - 1;
+        if let Some((c, kind)) = board.get(sq)
+            && c == color
+            && matches!(
+                kind,
                 PieceKind::Empress | PieceKind::Priest | PieceKind::Paladin | PieceKind::Dragon
-            )) if c == color
-        )
-    })
+            )
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Convert a material advantage: push the weak emperor to the edge and bring

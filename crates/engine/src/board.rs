@@ -336,42 +336,67 @@ impl Board {
         false
     }
 
-    /// Returns `true` if moving a non-emperor piece could expose the emperor:
-    /// an enemy slider has line-of-sight through a friendly piece, or an enemy
-    /// Paladin's two-square jump is blocked by a friendly piece. Conservative:
-    /// a `true` result only costs the caller a full legality check per move.
-    fn has_pin_threat(&self, king_sq: usize, color: Color) -> bool {
+    /// Squares holding a friendly piece that cannot leave the line between the
+    /// emperor and an enemy slider, plus pieces blocking a Paladin's two-square
+    /// jump. A move from one of these squares is legal only when the
+    /// destination stays on that line, which [`same_ray`] decides without
+    /// touching the board.
+    fn pinned_mask(&self, king_sq: usize, color: Color) -> u64 {
         let (kf, kr) = index_to_coord(king_sq);
+        let mut pinned = 0u64;
+
         for (direction, &(df, dr)) in rays::DIRECTIONS.iter().enumerate() {
             let orthogonal = df == 0 || dr == 0;
             let diagonal = df.abs() == dr.abs();
-            let mut friendly_seen = false;
+            let mut blocker = None;
+            let mut seeking_dragon = false;
+
             for &idx in rays::ray(king_sq, direction) {
-                match self.squares[idx as usize] {
-                    None => {}
-                    Some((pc, kind)) => {
-                        if pc == color {
-                            friendly_seen = true;
-                        } else {
-                            let slides = match kind {
-                                PieceKind::Empress => true,
-                                PieceKind::Priest => diagonal,
-                                PieceKind::Dragon => orthogonal,
-                                _ => false,
-                            };
-                            if friendly_seen && slides {
-                                return true;
-                            }
-                            // Keep scanning: a Dragon can be hidden behind the
-                            // attacker's own pieces, which do not block it.
-                        }
+                let sq = idx as usize;
+                let Some((pc, kind)) = self.squares[sq] else {
+                    continue;
+                };
+
+                if pc == color {
+                    if blocker.is_some() {
+                        break;
                     }
+                    blocker = Some(sq);
+                    continue;
                 }
+
+                let Some(pinned_sq) = blocker else {
+                    break;
+                };
+
+                if seeking_dragon {
+                    // Every closer enemy piece blocks all sliders except the
+                    // Dragon, which jumps its own pieces.
+                    if kind == PieceKind::Dragon {
+                        pinned |= 1 << pinned_sq;
+                    }
+                    break;
+                }
+
+                let attacks = match kind {
+                    PieceKind::Empress => true,
+                    PieceKind::Priest => diagonal,
+                    PieceKind::Dragon => orthogonal,
+                    _ => false,
+                };
+                if attacks {
+                    pinned |= 1 << pinned_sq;
+                    break;
+                }
+                if !orthogonal {
+                    break;
+                }
+                seeking_dragon = true;
             }
         }
 
-        // Paladin jumps pass over friendly pieces, so a friendly blocker two
-        // squares from the emperor hides a discovered check rather than a pin.
+        // The Paladin jump is blocked by the square next to the emperor, so a
+        // friendly piece there may only move onto the Paladin itself.
         for &(df, dr) in &[(0i8, 1i8), (0, -1), (1, 0), (-1, 0)] {
             let Some(blocker) = coord_to_index(kf + df, kr + dr) else {
                 continue;
@@ -383,11 +408,21 @@ impl Board {
                 continue;
             };
             if self.squares[jumper] == Some((color.opposite(), PieceKind::Paladin)) {
-                return true;
+                pinned |= 1 << blocker;
             }
         }
 
-        false
+        pinned
+    }
+
+    fn move_is_legal(&self, mv: &Move, king_sq: usize, color: Color, pinned: u64) -> bool {
+        if mv.from as usize == king_sq {
+            !self.make_move(mv).is_in_check(color)
+        } else if pinned & (1u64 << mv.from) != 0 {
+            same_ray(king_sq, mv.from as usize, mv.to as usize)
+        } else {
+            true
+        }
     }
 
     /// Fast targeted attack check — does a piece of `kind` at `from` attack `to`?
@@ -703,42 +738,128 @@ impl Board {
             Some(sq) => sq,
             None => return pseudo,
         };
-        let has_pins = in_check || self.has_pin_threat(king_sq, color);
 
-        if !has_pins {
-            // No pins: only the emperor's own moves need checking.
-            pseudo.retain(|mv| {
-                if mv.from as usize == king_sq {
-                    let child = self.make_move(mv);
-                    !child.is_in_check(color)
-                } else {
-                    true
-                }
-            });
-        } else {
-            // In check or a pin exists: check every move.
-            pseudo.retain(|mv| {
-                let child = self.make_move(mv);
-                !child.is_in_check(color)
-            });
+        if in_check {
+            pseudo.retain(|mv| !self.make_move(mv).is_in_check(color));
+            return pseudo;
         }
 
+        let pinned = self.pinned_mask(king_sq, color);
+        pseudo.retain(|mv| self.move_is_legal(mv, king_sq, color, pinned));
         pseudo
+    }
+
+    /// Bitmask of `color` pieces that can capture on `square`.
+    pub fn attackers_to(&self, square: usize, color: Color) -> u64 {
+        let (f, r) = index_to_coord(square);
+        let mut attackers = 0u64;
+
+        for &(df, dr) in &EMPEROR_OFFSETS {
+            if let Some(idx) = coord_to_index(f + df, r + dr)
+                && let Some((pc, kind)) = self.squares[idx]
+                && pc == color
+                && matches!(kind, PieceKind::Emperor | PieceKind::Paladin)
+            {
+                attackers |= 1u64 << idx;
+            }
+        }
+
+        for &(df, dr) in &KNIGHT_OFFSETS {
+            if let Some(idx) = coord_to_index(f + df, r + dr)
+                && self.squares[idx] == Some((color, PieceKind::Priest))
+            {
+                attackers |= 1u64 << idx;
+            }
+        }
+
+        for &(df, dr) in &[(0i8, 2i8), (0, -2), (2, 0), (-2, 0)] {
+            let Some(idx) = coord_to_index(f + df, r + dr) else {
+                continue;
+            };
+            if self.squares[idx] != Some((color, PieceKind::Paladin)) {
+                continue;
+            }
+            let intermediate = coord_to_index(f + df / 2, r + dr / 2);
+            if matches!(intermediate, Some(i) if self.squares[i].is_none_or(|(pc, _)| pc == color))
+            {
+                attackers |= 1u64 << idx;
+            }
+        }
+
+        // Knights capture one rank forward along the diagonals.
+        let forward = if color == Color::White { 1 } else { -1 };
+        for df in [-1i8, 1] {
+            if let Some(idx) = coord_to_index(f + df, r - forward)
+                && self.squares[idx] == Some((color, PieceKind::Knight))
+            {
+                attackers |= 1u64 << idx;
+            }
+        }
+
+        for (direction, &(df, dr)) in rays::DIRECTIONS.iter().enumerate() {
+            let orthogonal = df == 0 || dr == 0;
+            let diagonal = df.abs() == dr.abs();
+            let mut passed_friendly = false;
+
+            for &to in rays::ray(square, direction) {
+                let idx = to as usize;
+                let Some((pc, kind)) = self.squares[idx] else {
+                    continue;
+                };
+                if pc != color {
+                    break;
+                }
+
+                if passed_friendly {
+                    // Only a Dragon reaches past a friendly blocker.
+                    if kind == PieceKind::Dragon {
+                        attackers |= 1u64 << idx;
+                    }
+                    break;
+                }
+
+                let slides = match kind {
+                    PieceKind::Empress => true,
+                    PieceKind::Priest => diagonal,
+                    PieceKind::Dragon => orthogonal,
+                    _ => false,
+                };
+                if slides {
+                    attackers |= 1u64 << idx;
+                }
+                if !orthogonal {
+                    break;
+                }
+                passed_friendly = true;
+            }
+        }
+
+        attackers
     }
 
     /// Legal capture‑only moves (for quiescence search).
     pub fn generate_legal_captures(&self, color: Color) -> Vec<Move> {
-        let pseudo = self.generate_captures(color);
-        if self.find_king(color).is_none() {
+        self.generate_legal_captures_with_check(color, self.is_in_check(color))
+    }
+
+    /// Same as [`Self::generate_legal_captures`], for callers that already
+    /// computed [`Self::is_in_check`] for `color`.
+    pub fn generate_legal_captures_with_check(&self, color: Color, in_check: bool) -> Vec<Move> {
+        let mut pseudo = self.generate_captures(color);
+        let Some(king_sq) = self.find_king(color) else {
+            return pseudo;
+        };
+
+        if in_check {
+            pseudo.retain(|mv| !self.make_move(mv).is_in_check(color));
             return pseudo;
         }
+
+        let pinned = self.pinned_mask(king_sq, color);
+        if pinned != 0 || pseudo.iter().any(|mv| mv.from as usize == king_sq) {
+            pseudo.retain(|mv| self.move_is_legal(mv, king_sq, color, pinned));
+        }
         pseudo
-            .into_iter()
-            .filter(|mv| {
-                let child = self.make_move(mv);
-                !child.is_in_check(color)
-            })
-            .collect()
     }
 
     /// Determine the game state from the current player's perspective.
@@ -768,6 +889,15 @@ pub fn coord_to_index(file: i8, rank: i8) -> Option<usize> {
     } else {
         None
     }
+}
+
+fn same_ray(a: usize, b: usize, c: usize) -> bool {
+    let (af, ar) = index_to_coord(a);
+    let (bf, br) = index_to_coord(b);
+    let (cf, cr) = index_to_coord(c);
+    let ab = (i32::from(bf - af), i32::from(br - ar));
+    let ac = (i32::from(cf - af), i32::from(cr - ar));
+    ab.0 * ac.1 == ab.1 * ac.0 && ab.0 * ac.0 + ab.1 * ac.1 > 0
 }
 
 #[cfg(test)]
@@ -831,6 +961,206 @@ mod tests {
             }
         }
         assert_eq!(board.occupied(), expected);
+    }
+
+    fn describe(board: &Board) -> String {
+        let mut out = String::new();
+        for sq in 0..64 {
+            if let Some((c, k)) = board.get(sq) {
+                out.push_str(&format!("{:?}{:?}@{},{} ", c, k, sq % 8, sq / 8));
+            }
+        }
+        out
+    }
+
+    fn assert_generation_matches_full_verification(board: &Board) {
+        let color = board.turn;
+        let fast = board.generate_legal_moves(color);
+        let slow: Vec<_> = board
+            .generate_all_moves(color)
+            .into_iter()
+            .filter(|mv| !board.make_move(mv).is_in_check(color))
+            .collect();
+        for mv in &fast {
+            assert!(
+                slow.contains(mv),
+                "move {mv:?} illegally allowed: turn {color:?} {}",
+                describe(board)
+            );
+        }
+        for mv in &slow {
+            assert!(
+                fast.contains(mv),
+                "legal move {mv:?} missing: turn {color:?} {}",
+                describe(board)
+            );
+        }
+
+        let fast = board.generate_legal_captures(color);
+        let slow: Vec<_> = board
+            .generate_captures(color)
+            .into_iter()
+            .filter(|mv| !board.make_move(mv).is_in_check(color))
+            .collect();
+        for mv in &fast {
+            assert!(
+                slow.contains(mv),
+                "capture {mv:?} illegally allowed: {}",
+                describe(board)
+            );
+        }
+        for mv in &slow {
+            assert!(
+                fast.contains(mv),
+                "legal capture {mv:?} missing: {}",
+                describe(board)
+            );
+        }
+    }
+
+    fn board_with(pieces: &[(usize, Color, PieceKind)], turn: Color) -> Board {
+        let mut board = Board::empty();
+        for &(sq, color, kind) in pieces {
+            board.set(sq, Some((color, kind)));
+        }
+        board.turn = turn;
+        board
+    }
+
+    #[test]
+    fn pinned_pieces_are_restricted_to_the_pin_ray() {
+        let empress_pin = board_with(
+            &[
+                (4, Color::White, PieceKind::Emperor),  // e1
+                (12, Color::White, PieceKind::Knight),  // e2
+                (60, Color::Black, PieceKind::Empress), // e8
+                (56, Color::Black, PieceKind::Emperor), // a8
+            ],
+            Color::White,
+        );
+        let moves = empress_pin.generate_legal_moves(Color::White);
+        assert!(moves.contains(&Move::new(12, 20, false)), "e2-e3");
+        assert!(moves.contains(&Move::new(12, 28, false)), "e2-e4");
+        assert!(!moves.contains(&Move::new(12, 17, false)), "e2-c3");
+        assert_generation_matches_full_verification(&empress_pin);
+
+        let dragon_pin = board_with(
+            &[
+                (49, Color::Black, PieceKind::Emperor), // b7
+                (33, Color::Black, PieceKind::Dragon),  // b5
+                (25, Color::White, PieceKind::Dragon),  // b4
+                (0, Color::White, PieceKind::Emperor),  // a1
+            ],
+            Color::Black,
+        );
+        let moves = dragon_pin.generate_legal_moves(Color::Black);
+        assert!(moves.contains(&Move::new(33, 41, false)), "b5-b6");
+        assert!(
+            !moves.contains(&Move::new(33, 57, false)),
+            "b5-b8 must not jump its own emperor on the pin ray"
+        );
+        assert_generation_matches_full_verification(&dragon_pin);
+
+        let paladin_blocker = board_with(
+            &[
+                (4, Color::White, PieceKind::Emperor),  // e1
+                (12, Color::White, PieceKind::Knight),  // e2
+                (20, Color::Black, PieceKind::Paladin), // e3
+                (56, Color::Black, PieceKind::Emperor), // a8
+            ],
+            Color::White,
+        );
+        assert_generation_matches_full_verification(&paladin_blocker);
+
+        let priest_diagonal = board_with(
+            &[
+                (0, Color::White, PieceKind::Emperor),  // a1
+                (9, Color::White, PieceKind::Knight),   // b2
+                (18, Color::Black, PieceKind::Priest),  // c3
+                (63, Color::Black, PieceKind::Emperor), // h8
+            ],
+            Color::White,
+        );
+        assert!(
+            !priest_diagonal
+                .generate_legal_moves(Color::White)
+                .iter()
+                .any(|mv| mv.from == 9 && mv.to != 18)
+        );
+        assert_generation_matches_full_verification(&priest_diagonal);
+
+        let priest_orthogonal = board_with(
+            &[
+                (0, Color::White, PieceKind::Emperor),  // a1
+                (8, Color::White, PieceKind::Knight),   // a2
+                (24, Color::Black, PieceKind::Priest),  // a4
+                (63, Color::Black, PieceKind::Emperor), // h8
+            ],
+            Color::White,
+        );
+        assert_generation_matches_full_verification(&priest_orthogonal);
+
+        let double_blocker = board_with(
+            &[
+                (0, Color::White, PieceKind::Emperor),  // a1
+                (8, Color::White, PieceKind::Knight),   // a2
+                (16, Color::White, PieceKind::Knight),  // a3
+                (56, Color::Black, PieceKind::Empress), // a8
+                (63, Color::Black, PieceKind::Emperor), // h8
+            ],
+            Color::White,
+        );
+        let moves = double_blocker.generate_legal_moves(Color::White);
+        assert!(
+            !moves.iter().any(|mv| mv.from == 8),
+            "a2 knight is boxed in by its own knight"
+        );
+        assert!(moves.contains(&Move::new(16, 24, false)), "a3-a4");
+        assert_generation_matches_full_verification(&double_blocker);
+    }
+
+    #[test]
+    fn legal_move_generation_matches_full_verification() {
+        let mut rng = Rng(0x5EED_1234_9876_ABCD);
+        let mut pinned_positions = 0;
+
+        for _ in 0..500 {
+            let mut board = Board::empty();
+            place_random(&mut rng, &mut board, Color::White, PieceKind::Emperor);
+            place_random(&mut rng, &mut board, Color::Black, PieceKind::Emperor);
+            for _ in 0..(rng.next() % 12) {
+                let color = if rng.next() & 1 == 0 {
+                    Color::White
+                } else {
+                    Color::Black
+                };
+                let kind = random_kind(&mut rng);
+                place_random(&mut rng, &mut board, color, kind);
+            }
+            board.turn = if rng.next() & 1 == 0 {
+                Color::White
+            } else {
+                Color::Black
+            };
+            if !board.is_in_check(board.turn)
+                && let Some(king) = board.find_king(board.turn)
+                && board.pinned_mask(king, board.turn) != 0
+            {
+                pinned_positions += 1;
+            }
+            assert_generation_matches_full_verification(&board);
+        }
+        assert!(pinned_positions > 0, "no pin cases generated");
+
+        let mut board = Board::initial();
+        for _ in 0..300 {
+            assert_generation_matches_full_verification(&board);
+            let moves = board.generate_legal_moves(board.turn);
+            if moves.is_empty() {
+                break;
+            }
+            board = board.make_move(&moves[(rng.next() % moves.len() as u64) as usize]);
+        }
     }
 
     #[test]
