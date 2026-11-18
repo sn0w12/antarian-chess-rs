@@ -1,11 +1,13 @@
 import { useNavigate } from "react-router-dom";
 import { BoardArea } from "@/components/BoardArea";
+import { GameResultDialog } from "@/components/GameResultDialog";
 import { GameShell } from "@/components/GameShell";
 import { GameSidebar } from "@/components/GameSidebar";
 import { GameLoading } from "@/components/gameBits";
 import { useBotGame } from "@/hooks/useBotGame";
 import { useHistoryKeys } from "@/hooks/useHistoryKeys";
 import { capturedPieces, formatClock, formatEval } from "@/lib/engine";
+import { botGameResult } from "@/lib/gameResult";
 
 export function BotPage() {
   const navigate = useNavigate();
@@ -52,10 +54,12 @@ export function BotPage() {
 
   const yours = capturedPieces(viewed.squares, "black");
   const theirs = capturedPieces(viewed.squares, "white");
+  const result = botGameResult(game.flagged, live);
 
   return (
-    <GameShell
-      board={
+    <>
+      <GameShell
+        board={
         <BoardArea
           state={viewed}
           orientation="white"
@@ -94,6 +98,8 @@ export function BotPage() {
           onLeave={() => navigate("/")}
         />
       }
-    />
+      />
+      <GameResultDialog result={result} onLeave={() => navigate("/")} />
+    </>
   );
 }

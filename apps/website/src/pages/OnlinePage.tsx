@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import type { Color } from "antarian-chess";
 import { Check, ClipboardCopy } from "lucide-react";
 import { BoardArea } from "@/components/BoardArea";
+import { GameResultDialog } from "@/components/GameResultDialog";
 import { GameShell } from "@/components/GameShell";
 import { GameSidebar } from "@/components/GameSidebar";
 import { Button } from "@/components/ui/button";
@@ -20,6 +21,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { useHistoryKeys } from "@/hooks/useHistoryKeys";
 import { useOnlineGame } from "@/hooks/useOnlineGame";
 import { capturedPieces } from "@/lib/engine";
+import { onlineGameResult } from "@/lib/gameResult";
 import { loadName, saveName } from "@/lib/name";
 
 type Intent = "random" | "browse" | "public" | "private" | "join";
@@ -410,9 +412,18 @@ function OnlineGame({
     status = `${turnLabel} to move${check}`;
   }
 
+  const result = onlineGameResult({
+    live,
+    color,
+    over,
+    result: game.lastResult,
+    reason: game.lastReason,
+  });
+
   return (
-    <GameShell
-      board={
+    <>
+      <GameShell
+        board={
         <BoardArea
           state={viewed}
           orientation={color}
@@ -438,7 +449,10 @@ function OnlineGame({
           }}
           status={status}
           yourTurn={game.interactive}
-          chat={{ messages: game.chat, onSend: game.sendChat }}
+          chat={{
+            messages: game.chat,
+            onSend: game.sendChat,
+          }}
           rematch={
             over && game.lastReason !== "opponent disconnected"
               ? {
@@ -459,6 +473,8 @@ function OnlineGame({
           onLeave={onLeave}
         />
       }
-    />
+      />
+      <GameResultDialog result={result} onLeave={onLeave} />
+    </>
   );
 }

@@ -12,6 +12,7 @@ export interface ChatLine {
   from: string;
   text: string;
   system?: boolean;
+  own?: boolean;
 }
 
 export function useOnlineGame() {
@@ -250,7 +251,10 @@ export function useOnlineGame() {
         return;
       }
       current.sendChat(body);
-      setChat((previous) => [...previous, { from: "You", text: body }]);
+      setChat((previous) => [
+        ...previous,
+        { from: selfNameRef.current || "You", text: body, own: true },
+      ]);
     },
     [activeClient],
   );

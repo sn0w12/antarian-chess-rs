@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import type { Color, PieceKind } from "antarian-chess";
 import { ChevronLeft, ChevronRight, LogOut, MessageSquare } from "lucide-react";
 import {
@@ -19,12 +19,16 @@ import {
   DrawerPopup,
   DrawerTitle,
 } from "@/components/ui/drawer";
-import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import type { ChatLine } from "@/hooks/useOnlineGame";
 import { pieceImage } from "@/lib/pieces";
 import { cn } from "@/lib/utils";
+
+const GameChat = lazy(() =>
+  import("@/components/GameChat").then((module) => ({
+    default: module.GameChat,
+  })),
+);
 
 export interface RematchControls {
   requestedByOpponent: boolean;
@@ -63,11 +67,22 @@ interface GameSidebarProps {
 
 export function GameSidebar(props: GameSidebarProps) {
   const [chatOpen, setChatOpen] = useState(false);
+  const chatCount = props.chat?.messages.length ?? 0;
+  const [seenCount, setSeenCount] = useState(chatCount);
+
+  useEffect(() => {
+    if (chatOpen) {
+      setSeenCount(chatCount);
+    } else {
+      setSeenCount((current) => Math.min(current, chatCount));
+    }
+  }, [chatCount, chatOpen]);
 
   return (
     <>
       <MobileBar
         {...props}
+        unread={chatCount > seenCount}
         onOpenChat={props.chat ? () => setChatOpen(true) : undefined}
       />
 
@@ -82,13 +97,19 @@ export function GameSidebar(props: GameSidebarProps) {
           <DrawerPopup
             className="h-[min(70dvh,34rem)]"
             showBar
-            showCloseButton
           >
             <DrawerHeader className="px-4 pb-2">
               <DrawerTitle>Match chat</DrawerTitle>
             </DrawerHeader>
-            <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
-              <ChatPanel chat={props.chat} showLabel={false} />
+            <div className="flex min-h-0 flex-1 flex-col px-2 pb-2">
+              <Suspense fallback={<div className="min-h-0 flex-1" />}>
+                <GameChat
+                  active={chatOpen}
+                  className="flex-1"
+                  messages={props.chat.messages}
+                  onSend={props.chat.onSend}
+                />
+              </Suspense>
             </div>
           </DrawerPopup>
         </Drawer>
@@ -158,7 +179,14 @@ function Details({
       {chat && (
         <>
           <Separator />
-          <ChatPanel chat={chat} />
+          <Suspense fallback={<div className="h-64" />}>
+            <GameChat
+              messages={chat.messages}
+              onSend={chat.onSend}
+              showLabel
+              className="h-64"
+            />
+          </Suspense>
         </>
       )}
 
@@ -189,34 +217,63 @@ function MobileBar({
   history,
   onLeave,
   onOpenChat,
-}: GameSidebarProps & { onOpenChat?: () => void }) {
+  unread,
+}: GameSidebarProps & { onOpenChat?: () => void; unread?: boolean }) {
   return (
     <div className="flex shrink-0 flex-col gap-1.5 rounded-xl border border-border/70 bg-card p-1.5 lg:hidden">
       {rematch ? <RematchPanel controls={rematch} /> : null}
 
-      <div className="flex min-w-0 items-center gap-1">
-        {history ? (
-          <>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              aria-label="Previous move"
-              disabled={!history.canBack}
-              onClick={history.onBack}
-            >
-              <ChevronLeft aria-hidden="true" />
-            </Button>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              aria-label="Next move"
-              disabled={!history.canForward}
-              onClick={history.onForward}
-            >
-              <ChevronRight aria-hidden="true" />
-            </Button>
-          </>
-        ) : null}
+      <div
+        className={cn(
+          "min-w-0 items-center gap-1",
+          clocks
+            ? "grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]"
+            : "flex",
+        )}
+      >
+        <div
+          className={cn(
+            "flex min-w-0 items-center gap-1 overflow-hidden",
+            !clocks && "flex-1",
+          )}
+        >
+          {history ? (
+            <>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label="Previous move"
+                disabled={!history.canBack}
+                onClick={history.onBack}
+              >
+                <ChevronLeft aria-hidden="true" />
+              </Button>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label="Next move"
+                disabled={!history.canForward}
+                onClick={history.onForward}
+              >
+                <ChevronRight aria-hidden="true" />
+              </Button>
+            </>
+          ) : null}
+
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+            <CapturedInline
+              pieces={captures.yours}
+              color={captures.yourColor === "white" ? "black" : "white"}
+            />
+            {captures.yours.length > 0 && captures.theirs.length > 0 ? (
+              <span className="h-3 w-px shrink-0 bg-border" />
+            ) : null}
+            <CapturedInline
+              pieces={captures.theirs}
+              color={captures.yourColor}
+            />
+          </div>
+        </div>
 
         {clocks ? (
           <div className="flex shrink-0 items-center gap-1">
@@ -233,31 +290,28 @@ function MobileBar({
           </div>
         ) : null}
 
-        <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden px-1">
-          <CapturedInline
-            pieces={captures.yours}
-            color={captures.yourColor === "white" ? "black" : "white"}
-          />
-          {captures.yours.length > 0 && captures.theirs.length > 0 ? (
-            <span className="h-3 w-px shrink-0 bg-border" />
+        <div className="flex shrink-0 items-center justify-end gap-1">
+          {onOpenChat ? (
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              className="relative"
+              aria-label={
+                unread ? "Open match chat, unread messages" : "Open match chat"
+              }
+              onClick={onOpenChat}
+            >
+              <MessageSquare />
+              {unread ? (
+                <span
+                  aria-hidden="true"
+                  className="absolute end-1 top-1 size-1.5 rounded-full bg-destructive ring-2 ring-card"
+                />
+              ) : null}
+            </Button>
           ) : null}
-          <CapturedInline
-            pieces={captures.theirs}
-            color={captures.yourColor}
-          />
+          <LeaveButton onLeave={onLeave} compact />
         </div>
-
-        {onOpenChat ? (
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            aria-label="Open match chat"
-            onClick={onOpenChat}
-          >
-            <MessageSquare />
-          </Button>
-        ) : null}
-        <LeaveButton onLeave={onLeave} compact />
       </div>
     </div>
   );
@@ -411,73 +465,6 @@ function RematchPanel({ controls }: { controls: RematchControls }) {
           <Button onClick={controls.onRequest}>Request Rematch</Button>
         </>
       )}
-    </div>
-  );
-}
-
-function ChatPanel({
-  chat,
-  showLabel = true,
-}: {
-  chat: ChatControls;
-  showLabel?: boolean;
-}) {
-  const [text, setText] = useState("");
-  const bottomRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [chat.messages.length]);
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
-      {showLabel ? (
-        <span className="text-sm text-muted-foreground">Match Chat</span>
-      ) : null}
-      <ScrollArea className="min-h-24 flex-1 rounded-md bg-muted/15">
-        <div className="flex flex-col gap-1.5 p-2 text-sm">
-          {chat.messages.length === 0 ? (
-            <span className="text-muted-foreground">No messages yet.</span>
-          ) : (
-            chat.messages.map((line, index) => (
-              <p key={index} className="break-words">
-                {line.system ? (
-                  <span className="text-muted-foreground">{line.text}</span>
-                ) : (
-                  <>
-                    <span className="text-primary">{line.from}:</span>{" "}
-                    <span>{line.text}</span>
-                  </>
-                )}
-              </p>
-            ))
-          )}
-          <div ref={bottomRef} />
-        </div>
-      </ScrollArea>
-      <form
-        className="flex items-center gap-2"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const body = text.trim();
-          if (!body) {
-            return;
-          }
-          chat.onSend(body);
-          setText("");
-        }}
-      >
-        <Input
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          placeholder="Message opponent"
-          maxLength={280}
-          className="flex-1"
-        />
-        <Button type="submit" disabled={text.trim().length === 0}>
-          Send
-        </Button>
-      </form>
     </div>
   );
 }
