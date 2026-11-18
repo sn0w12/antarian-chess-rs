@@ -82,8 +82,6 @@ export function useOnlineGame() {
           name,
           url: url?.trim() || undefined,
           wasmUrl: "/chess_wasm.wasm",
-          // The live server rejects Ping until it runs the current protocol.
-          heartbeat: false,
         });
         selfNameRef.current = name;
         clientRef.current = created;
