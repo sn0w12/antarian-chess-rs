@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   connectOnline,
+  type Color,
   type GameState,
   type OnlineClient,
   type OnlineStatus,
 } from "antarian-chess";
 import { materialBalance } from "@/lib/engine";
 import { playGameStart, playMove, playMoveResult } from "@/lib/audio";
+
+const INITIAL_CLOCK = 600;
 
 export interface ChatLine {
   from: string;
@@ -20,6 +23,7 @@ export function useOnlineGame() {
   const historyRef = useRef<GameState[]>([]);
   const viewRef = useRef(0);
   const selfNameRef = useRef("");
+  const gameIdRef = useRef<string | null>(null);
 
   const [client, setClient] = useState<OnlineClient | null>(null);
   const [version, setVersion] = useState(0);
@@ -34,6 +38,11 @@ export function useOnlineGame() {
   const [rematchSent, setRematchSent] = useState(false);
   const [rematchDeclined, setRematchDeclined] = useState(false);
   const [inGame, setInGame] = useState(false);
+  const [clocks, setClocks] = useState({
+    white: INITIAL_CLOCK,
+    black: INITIAL_CLOCK,
+  });
+  const [flagged, setFlagged] = useState<Color | null>(null);
 
   const activeClient = useCallback((): OnlineClient | null => {
     const current = clientRef.current;
@@ -47,6 +56,12 @@ export function useOnlineGame() {
     }
     const next = current.game.state();
     const previous = historyRef.current;
+
+    if (current.gameId !== gameIdRef.current) {
+      gameIdRef.current = current.gameId;
+      setClocks({ white: INITIAL_CLOCK, black: INITIAL_CLOCK });
+      setFlagged(null);
+    }
 
     if (next.moveNumber === 0 || previous.length === 0) {
       historyRef.current = [next];
@@ -189,6 +204,7 @@ export function useOnlineGame() {
     client.status === "playing" &&
     live !== null &&
     live.status.kind === "ongoing" &&
+    flagged === null &&
     viewRef.current === historyRef.current.length - 1 &&
     (client.color === null || live.turn === client.color);
 
@@ -317,6 +333,48 @@ export function useOnlineGame() {
     setRematchSent(false);
   }, [activeClient]);
 
+  useEffect(() => {
+    if (
+      !live ||
+      live.status.kind !== "ongoing" ||
+      flagged ||
+      client?.status !== "playing"
+    ) {
+      return;
+    }
+    const turn = live.turn;
+    const timer = window.setInterval(() => {
+      setClocks((previous) => {
+        if (previous[turn] <= 0) {
+          return previous;
+        }
+        return { ...previous, [turn]: Math.max(0, previous[turn] - 0.1) };
+      });
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [client?.status, flagged, live]);
+
+  useEffect(() => {
+    if (!live || live.status.kind !== "ongoing" || flagged) {
+      return;
+    }
+    if (clocks.white <= 0) {
+      setFlagged("white");
+    } else if (clocks.black <= 0) {
+      setFlagged("black");
+    }
+  }, [clocks, flagged, live]);
+
+  useEffect(() => {
+    if (!flagged) {
+      return;
+    }
+    const current = activeClient();
+    if (current?.status === "playing" && current.color === flagged) {
+      current.resign();
+    }
+  }, [activeClient, flagged]);
+
   const status: OnlineStatus | "disconnected" = client?.status ?? "disconnected";
   const viewed = history[viewIndex] ?? live;
 
@@ -340,6 +398,8 @@ export function useOnlineGame() {
     interactive,
     chat,
     sendChat,
+    clocks,
+    flagged,
     startMatchmaking,
     refreshLobbies,
     createLobby,

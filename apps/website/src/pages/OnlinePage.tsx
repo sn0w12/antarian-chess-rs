@@ -20,7 +20,7 @@ import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { useHistoryKeys } from "@/hooks/useHistoryKeys";
 import { useOnlineGame } from "@/hooks/useOnlineGame";
-import { capturedPieces } from "@/lib/engine";
+import { capturedPieces, formatClock } from "@/lib/engine";
 import { onlineGameResult } from "@/lib/gameResult";
 import { loadName, saveName } from "@/lib/name";
 
@@ -418,6 +418,7 @@ function OnlineGame({
     over,
     result: game.lastResult,
     reason: game.lastReason,
+    flagged: game.flagged,
   });
 
   return (
@@ -449,6 +450,11 @@ function OnlineGame({
           }}
           status={status}
           yourTurn={game.interactive}
+          clocks={{
+            white: formatClock(game.clocks.white),
+            black: formatClock(game.clocks.black),
+            active: live.turn,
+          }}
           chat={{
             messages: game.chat,
             onSend: game.sendChat,

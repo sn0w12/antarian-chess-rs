@@ -57,12 +57,14 @@ export function onlineGameResult({
   over,
   result,
   reason,
+  flagged,
 }: {
   live: GameState;
   color: Color;
   over: boolean;
   result: string | null;
   reason: string | null;
+  flagged?: Color | null;
 }): GameResult | null {
   if (live.status.kind === "checkmate") {
     const won = live.status.winner === color;
@@ -82,6 +84,18 @@ export function onlineGameResult({
       tone: "draw",
       title: "Draw",
       description: "Stalemate. No legal moves remain.",
+    };
+  }
+
+  if (flagged) {
+    const lost = flagged === color;
+    return {
+      id: `flagged-${flagged}`,
+      tone: lost ? "loss" : "win",
+      title: lost ? "You lost on time" : "You won on time",
+      description: lost
+        ? "Your clock ran out."
+        : "Your opponent's clock ran out.",
     };
   }
 
