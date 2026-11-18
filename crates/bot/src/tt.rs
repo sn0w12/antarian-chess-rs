@@ -1,5 +1,5 @@
 use chess_engine::Board;
-use dashmap::DashMap;
+use dashmap::{DashMap, mapref::entry::Entry};
 
 type ZobristKey = u64;
 
@@ -46,8 +46,16 @@ impl TranspositionTable {
     }
 
     pub fn store(&self, key: ZobristKey, entry: TTEntry) {
-        // Always replace — depth-preferred replacement is fine for this engine size
-        self.map.insert(key, entry);
+        match self.map.entry(key) {
+            Entry::Occupied(mut slot) => {
+                if entry.depth >= slot.get().depth {
+                    slot.insert(entry);
+                }
+            }
+            Entry::Vacant(slot) => {
+                slot.insert(entry);
+            }
+        }
     }
 
     #[allow(dead_code)]

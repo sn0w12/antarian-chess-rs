@@ -1,6 +1,6 @@
 use crate::evaluation::evaluate;
 use crate::tt::{TTEntry, TTFlag, TranspositionTable, zobrist_key};
-use chess_engine::{Board, Color, Move};
+use chess_engine::{Board, Color, Move, PieceKind};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -17,9 +17,19 @@ pub struct SearchResult {
     pub depth: u32,
 }
 
+pub const MATE_SCORE: i32 = 90_000;
 const INF: i32 = 999_999;
-const MATE_SCORE: i32 = 90_000;
 const MAX_PLY: usize = 128;
+
+/// Full-move distance to mate when `score` is a forced-mate score.
+pub fn mate_distance(score: i32) -> Option<u32> {
+    let abs = score.abs();
+    if abs >= MATE_SCORE - MAX_PLY as i32 {
+        Some(((MATE_SCORE - abs + 1) / 2) as u32)
+    } else {
+        None
+    }
+}
 
 // Null-move reduction: R = 2 + depth/6  (less aggressive → fewer blunders)
 fn null_move_r(depth: u32) -> u32 {
@@ -40,6 +50,21 @@ fn futility_margin(depth: u32) -> i32 {
 /// Negamax-aware evaluation: score from the current player's perspective.
 fn eval_relative(board: &Board) -> i32 {
     evaluate(board) * board.turn.multiplier()
+}
+
+/// True when `color` still has a piece that is not an emperor or a knight.
+/// Null-move pruning is unsafe without one, because the position is likely
+/// close to zugzwang.
+fn has_piece_material(board: &Board, color: Color) -> bool {
+    (0..64).any(|sq| {
+        matches!(
+            board.get(sq),
+            Some((
+                c,
+                PieceKind::Empress | PieceKind::Priest | PieceKind::Paladin | PieceKind::Dragon
+            )) if c == color
+        )
+    })
 }
 
 // TT mate score adjustment: mate scores are ply-relative, but TT stores
@@ -74,6 +99,8 @@ pub struct SearchThread {
     best_result: Arc<Mutex<Option<(Move, i32, u32)>>>,
     killers: [[Option<Move>; 2]; MAX_PLY],
     history: [[i32; 64]; 64],
+    root_best: Option<Move>,
+    aborted: bool,
     nodes: u64,
 }
 
@@ -89,8 +116,14 @@ impl SearchThread {
             best_result,
             killers: [[None; 2]; MAX_PLY],
             history: [[0i32; 64]; 64],
+            root_best: None,
+            aborted: false,
             nodes: 0,
         }
+    }
+
+    fn stopped(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
     }
 
     /// Full iterative deepening loop for one Lazy SMP thread.
@@ -100,7 +133,7 @@ impl SearchThread {
         let mut last_score = 0;
 
         loop {
-            if self.stop.load(Ordering::Relaxed) {
+            if self.stopped() {
                 break;
             }
 
@@ -109,37 +142,39 @@ impl SearchThread {
 
             let (score, best_mv) = self.search_root(board, thread_depth, color);
 
-            if !self.stop.load(Ordering::Relaxed) {
-                last_score = score;
+            if self.aborted || self.stopped() || best_mv == Move::NULL {
+                break;
+            }
 
-                // Update global best result
-                if let Ok(mut guard) = self.best_result.lock() {
-                    match guard.as_ref() {
-                        Some((_, _, d)) if thread_depth > *d => {
-                            *guard = Some((best_mv, score, thread_depth));
-                        }
-                        None => {
-                            *guard = Some((best_mv, score, thread_depth));
-                        }
-                        _ => {}
+            last_score = score;
+
+            // Update global best result
+            if let Ok(mut guard) = self.best_result.lock() {
+                match guard.as_ref() {
+                    Some((_, _, d)) if thread_depth > *d => {
+                        *guard = Some((best_mv, score, thread_depth));
                     }
+                    None => {
+                        *guard = Some((best_mv, score, thread_depth));
+                    }
+                    _ => {}
                 }
             }
 
             depth += 1;
 
             // Early exit on forced mate
-            if score.abs() >= MATE_SCORE - 100 {
+            if score.abs() >= MATE_SCORE - MAX_PLY as i32 {
                 break;
             }
         }
 
-        if last_score.abs() >= MATE_SCORE - 100 {
+        if !self.aborted && last_score.abs() >= MATE_SCORE - MAX_PLY as i32 {
             self.stop.store(true, Ordering::Relaxed);
         }
     }
 
-    // ----- Root search with aspiration windows -----
+    // ----- Root search with PVS -----
 
     fn search_root(&mut self, board: &Board, depth: u32, color: Color) -> (i32, Move) {
         let mut moves = board.generate_legal_moves(color);
@@ -148,72 +183,42 @@ impl SearchThread {
         }
 
         // Move ordering: score captures by MVV-LVA, quiet by history
-        self.score_moves(&mut moves, board, 0, None);
+        self.score_moves(&mut moves, board, 0, self.root_best.as_ref());
 
-        // Aspiration window
-        let mut alpha = -INF;
-        let mut beta = INF;
-        let mut delta = 75;
+        let mut best_score = -INF;
+        let mut best_move = moves[0];
 
-        let mut best_score;
-        let mut best_move;
-
-        // First move with full window for PVS
-        {
-            let first_mv = moves[0];
-            let child = board.make_move(&first_mv);
-            best_score = -self.alpha_beta(&child, depth - 1, -beta, -alpha, 1);
-            best_move = first_mv;
-        }
-
-        if self.stop.load(Ordering::Relaxed) {
-            return (best_score, best_move);
-        }
-
-        // PVS on remaining moves with aspiration sizing
-        alpha = best_score - delta;
-        beta = best_score + delta;
-
-        for &mv in &moves[1..] {
-            if self.stop.load(Ordering::Relaxed) {
-                break;
+        for (index, &mv) in moves.iter().enumerate() {
+            if self.stopped() {
+                self.aborted = true;
+                return (best_score, best_move);
             }
 
             let child = board.make_move(&mv);
 
-            // Zero-window search first (PVS)
-            let mut score = -self.alpha_beta(&child, depth - 1, -alpha - 1, -alpha, 1);
+            // The first move gets a full window; later moves get a null window
+            // and are re-searched at full width when they beat the best so far.
+            let mut score = if index == 0 {
+                -self.alpha_beta(&child, depth - 1, -INF, INF, 1)
+            } else {
+                -self.alpha_beta(&child, depth - 1, -best_score - 1, -best_score, 1)
+            };
 
-            // Fail-high: re-search with full window
-            if score > alpha && score < beta {
-                score = -self.alpha_beta(&child, depth - 1, -beta, -alpha, 1);
+            if score > best_score && index > 0 {
+                score = -self.alpha_beta(&child, depth - 1, -INF, -best_score, 1);
+            }
+
+            if self.aborted {
+                return (best_score, best_move);
             }
 
             if score > best_score {
                 best_score = score;
                 best_move = mv;
             }
-
-            if score >= beta {
-                break;
-            }
-
-            // Widen aspiration window if needed
-            if score <= alpha {
-                alpha = (alpha - delta).max(-INF);
-                delta += delta / 2;
-                // Re-search this move with wider window
-                score = -self.alpha_beta(&child, depth - 1, -beta, -alpha, 1);
-                if score > best_score {
-                    best_score = score;
-                    best_move = mv;
-                }
-            }
-
-            alpha = best_score - delta;
-            beta = best_score + delta;
         }
 
+        self.root_best = Some(best_move);
         (best_score, best_move)
     }
 
@@ -230,7 +235,10 @@ impl SearchThread {
         self.nodes += 1;
 
         // Check stop flag periodically
-        if self.nodes & 2047 == 0 && self.stop.load(Ordering::Relaxed) {
+        if self.nodes & 1023 == 0 && self.stopped() {
+            self.aborted = true;
+        }
+        if self.aborted {
             return 0;
         }
 
@@ -266,14 +274,23 @@ impl SearchThread {
         let in_check = board.is_in_check(board.turn);
 
         // ----- Null-move pruning -----
-        if !in_check && depth >= 3 {
+        // Positions with no piece material are zugzwang-prone, so the null move
+        // is not a reliable bound there.
+        if !in_check
+            && depth >= 3
+            && has_piece_material(board, board.turn)
+            && has_piece_material(board, board.turn.opposite())
+        {
             let r = null_move_r(depth);
             let null_depth = depth.saturating_sub(1 + r);
             if null_depth > 0 {
                 let null_board = board.null_move();
                 let score = -self.alpha_beta(&null_board, null_depth, -beta, -beta + 1, ply + 1);
+                if self.aborted {
+                    return 0;
+                }
                 if score >= beta {
-                    return beta;
+                    return score;
                 }
             }
         }
@@ -306,14 +323,20 @@ impl SearchThread {
         let mut moves_searched = 0u32;
 
         for &mv in &moves {
-            if self.stop.load(Ordering::Relaxed) {
+            if self.stopped() {
+                self.aborted = true;
                 break;
             }
 
+            // ----- Futility pruning (depth <= 3, quiet moves) -----
             let child = board.make_move(&mv);
 
-            // ----- Futility pruning (depth <= 3, quiet moves) -----
-            if depth + ext <= 3 && !in_check && !mv.capture && moves_searched > 0 {
+            if depth + ext <= 3
+                && !in_check
+                && !mv.capture
+                && moves_searched > 0
+                && !child.is_in_check(child.turn)
+            {
                 let stand_pat = eval_relative(board);
                 if stand_pat + futility_margin(depth + ext) <= alpha {
                     continue;
@@ -354,6 +377,10 @@ impl SearchThread {
                 }
             }
 
+            if self.aborted {
+                return 0;
+            }
+
             moves_searched += 1;
 
             if score > best_score {
@@ -387,6 +414,10 @@ impl SearchThread {
             }
         }
 
+        if self.aborted {
+            return best_score;
+        }
+
         // Store in TT
         self.tt.store(
             key,
@@ -406,55 +437,93 @@ impl SearchThread {
     fn quiescence(&mut self, board: &Board, mut alpha: i32, beta: i32, ply: usize) -> i32 {
         self.nodes += 1;
 
-        if self.nodes & 1023 == 0 && self.stop.load(Ordering::Relaxed) {
-            return eval_relative(board);
+        if self.nodes & 1023 == 0 && self.stopped() {
+            self.aborted = true;
+        }
+        if self.aborted {
+            return 0;
         }
 
         if ply >= MAX_PLY {
             return eval_relative(board);
         }
 
-        // Standing pat
-        let stand_pat = eval_relative(board);
-        if stand_pat >= beta {
-            return beta;
+        let in_check = board.is_in_check(board.turn);
+
+        let mut best_score;
+        let mut stand_pat = -INF;
+        let mut moves;
+
+        if in_check {
+            // A checked side cannot stand pat: every evasion must be searched
+            // or the node scores as if the check did not exist.
+            moves = board.generate_legal_moves(board.turn);
+            if moves.is_empty() {
+                return -(MATE_SCORE - ply as i32);
+            }
+            self.score_moves(&mut moves, board, ply, None);
+            best_score = -INF;
+        } else {
+            // Standing pat
+            stand_pat = eval_relative(board);
+            if stand_pat >= beta {
+                return stand_pat;
+            }
+            if stand_pat > alpha {
+                alpha = stand_pat;
+            }
+            best_score = stand_pat;
+
+            moves = board.generate_legal_captures(board.turn);
+            self.score_captures(&mut moves, board);
         }
-        if stand_pat > alpha {
-            alpha = stand_pat;
-        }
 
-        // Generate captures only
-        let mut captures = board.generate_legal_captures(board.turn);
-
-        // Score and sort captures by MVV-LVA (best first)
-        self.score_captures(&mut captures, board);
-
-        let mut best_score = stand_pat;
-
-        for &mv in captures.iter().rev() {
-            // Delta pruning: skip captures that can't possibly raise alpha
-            let victim_value = board
-                .get(mv.to as usize)
-                .map(|(_, k)| k.value())
-                .unwrap_or(0);
-
-            // MVV-LVA delta margin
-            if stand_pat + victim_value + 200 <= alpha {
-                continue;
+        if in_check {
+            for &mv in &moves {
+                let child = board.make_move(&mv);
+                let score = -self.quiescence(&child, -beta, -alpha, ply + 1);
+                if self.aborted {
+                    return 0;
+                }
+                if score > best_score {
+                    best_score = score;
+                }
+                if score >= beta {
+                    return score;
+                }
+                if score > alpha {
+                    alpha = score;
+                }
             }
+        } else {
+            for &mv in moves.iter().rev() {
+                // Delta pruning: skip captures that can't possibly raise alpha
+                let victim_value = board
+                    .get(mv.to as usize)
+                    .map(|(_, k)| k.value())
+                    .unwrap_or(0);
 
-            let child = board.make_move(&mv);
-            let score = -self.quiescence(&child, -beta, -alpha, ply + 1);
+                // MVV-LVA delta margin
+                if stand_pat + victim_value + 200 <= alpha {
+                    continue;
+                }
 
-            if score > best_score {
-                best_score = score;
-            }
+                let child = board.make_move(&mv);
+                let score = -self.quiescence(&child, -beta, -alpha, ply + 1);
+                if self.aborted {
+                    return 0;
+                }
 
-            if score >= beta {
-                return beta;
-            }
-            if score > alpha {
-                alpha = score;
+                if score > best_score {
+                    best_score = score;
+                }
+
+                if score >= beta {
+                    return score;
+                }
+                if score > alpha {
+                    alpha = score;
+                }
             }
         }
 
@@ -597,7 +666,9 @@ pub fn find_best_move(board: &Board, time_limit: Duration) -> Option<SearchResul
 
     {
         let guard = best_result.lock().unwrap();
-        if let Some(&(mv, score, depth)) = guard.as_ref() {
+        if let Some(&(mv, score, depth)) = guard.as_ref()
+            && mv != Move::NULL
+        {
             return Some(SearchResult {
                 best_move: mv,
                 score,

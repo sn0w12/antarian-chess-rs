@@ -544,12 +544,20 @@ impl ChessBoard {
 
     fn exec_move_async(&mut self, result: chess_bot::SearchResult, cx: &mut Context<Self>) {
         let mv = result.best_move;
+        if mv == Move::NULL
+            || !self
+                .game_state
+                .generate_legal_moves(self.game_state.turn)
+                .contains(&mv)
+        {
+            return;
+        }
         let was_capture = mv.capture;
         if was_capture && let Some((_, kind)) = self.game_state.get(mv.to as usize) {
             self.captured_us.push(kind);
         }
         self.last_move = Some(mv);
-        self.bot_score = Some(result.score);
+        self.bot_score = Some(result.score * self.game_state.turn.multiplier());
         self.bot_depth = Some(result.depth);
         self.game_state = self.game_state.make_move(&mv);
         self.selected_square = None;
@@ -816,7 +824,7 @@ fn sidebar(this: &ChessBoard, _window: &mut Window, cx: &mut Context<ChessBoard>
                 .w_full()
                 .px_2()
                 .gap_1()
-                .child(detail(t, "Bot Eval", &score_str))
+                .child(detail(t, "Bot Eval (White)", &score_str))
                 .child(detail(t, "Search Depth", &depth_str))
         }))
         .child(Separator::horizontal().w_full())
@@ -1151,16 +1159,18 @@ fn clock_row(
 }
 
 fn fmt_score(score: i32) -> String {
-    if score.abs() >= 90_000 {
-        let mate_in = (100_000 - score.abs()) / 2;
-        format!("Mate in {mate_in}")
-    } else {
-        let centipawns = score as f64 / 100.0;
-        if centipawns > 0.0 {
-            format!("+{:.2}", centipawns)
+    if let Some(mate_in) = chess_bot::mate_distance(score) {
+        return if score > 0 {
+            format!("Mate in {mate_in}")
         } else {
-            format!("{:.2}", centipawns)
-        }
+            format!("Mated in {mate_in}")
+        };
+    }
+    let centipawns = score as f64 / 100.0;
+    if centipawns > 0.0 {
+        format!("+{:.2}", centipawns)
+    } else {
+        format!("{:.2}", centipawns)
     }
 }
 

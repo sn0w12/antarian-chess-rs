@@ -225,10 +225,10 @@ impl Board {
         false
     }
 
-    /// Returns `true` if an enemy slider has line-of-sight to the king through
-    /// a friendly piece — i.e. a pin exists. When there are no pin threats,
-    /// `generate_legal_moves` can skip the expensive `make_move`+`is_in_check`
-    /// filter for most moves.
+    /// Returns `true` if moving a non-emperor piece could expose the emperor:
+    /// an enemy slider has line-of-sight through a friendly piece, or an enemy
+    /// Paladin's two-square jump is blocked by a friendly piece. Conservative:
+    /// a `true` result only costs the caller a full legality check per move.
     fn has_pin_threat(&self, king_sq: usize, color: Color) -> bool {
         let (kf, kr) = index_to_coord(king_sq);
         const DIRS: [(i8, i8); 8] = [
@@ -242,36 +242,29 @@ impl Board {
             (1, 1),
         ];
         for &(df, dr) in &DIRS {
+            let orthogonal = df == 0 || dr == 0;
+            let diagonal = df.abs() == dr.abs();
+            let mut friendly_seen = false;
             let mut cf = kf + df;
             let mut cr = kr + dr;
-            let mut found_friendly = false;
             while let Some(idx) = coord_to_index(cf, cr) {
                 match self.squares[idx] {
-                    None => {
-                        cf += df;
-                        cr += dr;
-                        continue;
-                    }
+                    None => {}
                     Some((pc, kind)) => {
                         if pc == color {
-                            if found_friendly {
-                                break;
-                            }
-                            found_friendly = true;
+                            friendly_seen = true;
                         } else {
-                            if found_friendly {
-                                // king → friendly → enemy: could be a pin
-                                let slides = match kind {
-                                    PieceKind::Empress => true,
-                                    PieceKind::Priest => df.abs() == dr.abs(),
-                                    PieceKind::Dragon => df == 0 || dr == 0,
-                                    _ => false,
-                                };
-                                if slides {
-                                    return true;
-                                }
+                            let slides = match kind {
+                                PieceKind::Empress => true,
+                                PieceKind::Priest => diagonal,
+                                PieceKind::Dragon => orthogonal,
+                                _ => false,
+                            };
+                            if friendly_seen && slides {
+                                return true;
                             }
-                            break;
+                            // Keep scanning: a Dragon can be hidden behind the
+                            // attacker's own pieces, which do not block it.
                         }
                     }
                 }
@@ -279,6 +272,24 @@ impl Board {
                 cr += dr;
             }
         }
+
+        // Paladin jumps pass over friendly pieces, so a friendly blocker two
+        // squares from the emperor hides a discovered check rather than a pin.
+        for &(df, dr) in &[(0i8, 1i8), (0, -1), (1, 0), (-1, 0)] {
+            let Some(blocker) = coord_to_index(kf + df, kr + dr) else {
+                continue;
+            };
+            if !matches!(self.squares[blocker], Some((pc, _)) if pc == color) {
+                continue;
+            }
+            let Some(jumper) = coord_to_index(kf + 2 * df, kr + 2 * dr) else {
+                continue;
+            };
+            if self.squares[jumper] == Some((color.opposite(), PieceKind::Paladin)) {
+                return true;
+            }
+        }
+
         false
     }
 
