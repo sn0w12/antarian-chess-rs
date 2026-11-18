@@ -1,6 +1,6 @@
-use crate::evaluation::evaluate;
+use crate::evaluation::{evaluate, has_major_piece};
 use crate::tt::{TTEntry, TTFlag, TranspositionTable, zobrist_key};
-use chess_engine::{Board, Color, Move, PieceKind};
+use chess_engine::{Board, Color, Move};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -15,11 +15,15 @@ pub struct SearchResult {
     pub score: i32,
     /// How many plies (half-moves) of iterative deepening were completed.
     pub depth: u32,
+    /// Nodes visited by the thread that produced this result.
+    pub nodes: u64,
 }
 
 pub const MATE_SCORE: i32 = 90_000;
 const INF: i32 = 999_999;
 const MAX_PLY: usize = 128;
+
+type SharedBest = Arc<Mutex<Option<(Move, i32, u32, u64)>>>;
 
 /// Full-move distance to mate when `score` is a forced-mate score.
 pub fn mate_distance(score: i32) -> Option<u32> {
@@ -52,21 +56,6 @@ fn eval_relative(board: &Board) -> i32 {
     evaluate(board) * board.turn.multiplier()
 }
 
-/// True when `color` still has a piece that is not an emperor or a knight.
-/// Null-move pruning is unsafe without one, because the position is likely
-/// close to zugzwang.
-fn has_piece_material(board: &Board, color: Color) -> bool {
-    (0..64).any(|sq| {
-        matches!(
-            board.get(sq),
-            Some((
-                c,
-                PieceKind::Empress | PieceKind::Priest | PieceKind::Paladin | PieceKind::Dragon
-            )) if c == color
-        )
-    })
-}
-
 // TT mate score adjustment: mate scores are ply-relative, but TT stores
 // them distance-from-root so they remain valid across different search depths.
 fn tt_store_score(score: i32, ply: usize) -> i32 {
@@ -96,10 +85,10 @@ fn tt_retrieve_score(stored: i32, ply: usize) -> i32 {
 pub struct SearchThread {
     tt: Arc<TranspositionTable>,
     stop: Arc<AtomicBool>,
-    best_result: Arc<Mutex<Option<(Move, i32, u32)>>>,
+    best_result: SharedBest,
     killers: [[Option<Move>; 2]; MAX_PLY],
     history: [[i32; 64]; 64],
-    root_best: Option<Move>,
+    root_prev: Vec<(Move, i32)>,
     aborted: bool,
     nodes: u64,
 }
@@ -108,7 +97,7 @@ impl SearchThread {
     pub fn new(
         tt: Arc<TranspositionTable>,
         stop: Arc<AtomicBool>,
-        best_result: Arc<Mutex<Option<(Move, i32, u32)>>>,
+        best_result: SharedBest,
     ) -> Self {
         Self {
             tt,
@@ -116,7 +105,7 @@ impl SearchThread {
             best_result,
             killers: [[None; 2]; MAX_PLY],
             history: [[0i32; 64]; 64],
-            root_best: None,
+            root_prev: Vec::new(),
             aborted: false,
             nodes: 0,
         }
@@ -151,11 +140,11 @@ impl SearchThread {
             // Update global best result
             if let Ok(mut guard) = self.best_result.lock() {
                 match guard.as_ref() {
-                    Some((_, _, d)) if thread_depth > *d => {
-                        *guard = Some((best_mv, score, thread_depth));
+                    Some((_, _, d, _)) if thread_depth > *d => {
+                        *guard = Some((best_mv, score, thread_depth, self.nodes));
                     }
                     None => {
-                        *guard = Some((best_mv, score, thread_depth));
+                        *guard = Some((best_mv, score, thread_depth, self.nodes));
                     }
                     _ => {}
                 }
@@ -182,11 +171,30 @@ impl SearchThread {
             return (0, Move::NULL);
         }
 
-        // Move ordering: score captures by MVV-LVA, quiet by history
-        self.score_moves(&mut moves, board, 0, self.root_best.as_ref());
+        // Later iterations order by the previous scores, which are a much
+        // better predictor than the static heuristics.
+        if self.root_prev.is_empty() {
+            self.score_moves(&mut moves, board, 0, None);
+        } else {
+            let mut ranked: Vec<(Move, i32)> = moves
+                .iter()
+                .map(|&mv| {
+                    let prev = self
+                        .root_prev
+                        .iter()
+                        .find(|(m, _)| m.from == mv.from && m.to == mv.to)
+                        .map(|(_, s)| *s)
+                        .unwrap_or(-INF);
+                    (mv, prev)
+                })
+                .collect();
+            ranked.sort_by_key(|(_, score)| -*score);
+            moves = ranked.into_iter().map(|(mv, _)| mv).collect();
+        }
 
         let mut best_score = -INF;
         let mut best_move = moves[0];
+        let mut scored = Vec::with_capacity(moves.len());
 
         for (index, &mv) in moves.iter().enumerate() {
             if self.stopped() {
@@ -212,13 +220,15 @@ impl SearchThread {
                 return (best_score, best_move);
             }
 
+            scored.push((mv, score));
+
             if score > best_score {
                 best_score = score;
                 best_move = mv;
             }
         }
 
-        self.root_best = Some(best_move);
+        self.root_prev = scored;
         (best_score, best_move)
     }
 
@@ -278,8 +288,8 @@ impl SearchThread {
         // is not a reliable bound there.
         if !in_check
             && depth >= 3
-            && has_piece_material(board, board.turn)
-            && has_piece_material(board, board.turn.opposite())
+            && has_major_piece(board, board.turn)
+            && has_major_piece(board, board.turn.opposite())
         {
             let r = null_move_r(depth);
             let null_depth = depth.saturating_sub(1 + r);
@@ -306,7 +316,7 @@ impl SearchThread {
             return self.quiescence(board, alpha, beta, ply);
         }
 
-        let mut moves = board.generate_legal_moves(board.turn);
+        let mut moves = board.generate_legal_moves_with_check(board.turn, in_check);
         if moves.is_empty() {
             return if in_check {
                 -(MATE_SCORE - ply as i32)
@@ -316,6 +326,12 @@ impl SearchThread {
         }
 
         self.score_moves(&mut moves, board, ply, hash_move.as_ref());
+
+        let futility_base = if depth + ext <= 3 && !in_check {
+            Some(eval_relative(board))
+        } else {
+            None
+        };
 
         let mut best_score = -INF;
         let mut best_move = None;
@@ -331,16 +347,13 @@ impl SearchThread {
             // ----- Futility pruning (depth <= 3, quiet moves) -----
             let child = board.make_move(&mv);
 
-            if depth + ext <= 3
-                && !in_check
+            if let Some(base) = futility_base
                 && !mv.capture
                 && moves_searched > 0
                 && !child.is_in_check(child.turn)
+                && base + futility_margin(depth + ext) <= alpha
             {
-                let stand_pat = eval_relative(board);
-                if stand_pat + futility_margin(depth + ext) <= alpha {
-                    continue;
-                }
+                continue;
             }
 
             // ----- Late Move Reductions (LMR) -----
@@ -457,7 +470,7 @@ impl SearchThread {
         if in_check {
             // A checked side cannot stand pat: every evasion must be searched
             // or the node scores as if the check did not exist.
-            moves = board.generate_legal_moves(board.turn);
+            moves = board.generate_legal_moves_with_check(board.turn, true);
             if moves.is_empty() {
                 return -(MATE_SCORE - ply as i32);
             }
@@ -632,7 +645,7 @@ impl SearchThread {
 pub fn find_best_move(board: &Board, time_limit: Duration) -> Option<SearchResult> {
     let tt = Arc::new(TranspositionTable::new());
     let stop = Arc::new(AtomicBool::new(false));
-    let best_result: Arc<Mutex<Option<(Move, i32, u32)>>> = Arc::new(Mutex::new(None));
+    let best_result: SharedBest = Arc::new(Mutex::new(None));
 
     let num_threads = std::thread::available_parallelism()
         .map(|n| n.get().min(8))
@@ -666,13 +679,14 @@ pub fn find_best_move(board: &Board, time_limit: Duration) -> Option<SearchResul
 
     {
         let guard = best_result.lock().unwrap();
-        if let Some(&(mv, score, depth)) = guard.as_ref()
+        if let Some(&(mv, score, depth, nodes)) = guard.as_ref()
             && mv != Move::NULL
         {
             return Some(SearchResult {
                 best_move: mv,
                 score,
                 depth,
+                nodes,
             });
         }
     }
@@ -684,5 +698,6 @@ pub fn find_best_move(board: &Board, time_limit: Duration) -> Option<SearchResul
             best_move: mv,
             score: 0,
             depth: 0,
+            nodes: 0,
         })
 }

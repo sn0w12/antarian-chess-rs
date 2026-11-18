@@ -31,12 +31,16 @@ const EG: [i32; 6] = [
 // ---------------------------------------------------------------------------
 
 const PST_MG: [[i32; 64]; 6] = [
-    /* Emperor — safe and central */
+    /* Emperor — keep the back rank; advancing exposes the whole game */
     [
-        -30, -25, -20, -15, -15, -20, -25, -30, -25, -10, -5, 0, 0, -5, -10, -25, -20, -5, 5, 10,
-        10, 5, -5, -20, -15, 0, 10, 20, 20, 10, 0, -15, -15, 0, 10, 20, 20, 10, 0, -15, -20, -5, 5,
-        10, 10, 5, -5, -20, -25, -10, -5, 0, 0, -5, -10, -25, -30, -25, -20, -15, -15, -20, -25,
-        -30,
+        0, 0, 0, 0, 0, 0, 0, 0, // rank 0 (home)
+        -10, -10, -10, -10, -10, -10, -10, -10, // rank 1
+        -20, -20, -20, -20, -20, -20, -20, -20, // rank 2
+        -30, -30, -30, -30, -30, -30, -30, -30, // rank 3
+        -40, -40, -40, -40, -40, -40, -40, -40, // rank 4
+        -50, -50, -50, -50, -50, -50, -50, -50, // rank 5
+        -60, -60, -60, -60, -60, -60, -60, -60, // rank 6
+        -70, -70, -70, -70, -70, -70, -70, -70, // rank 7
     ],
     /* Empress — centralised */
     [
@@ -127,44 +131,26 @@ const PST_EG: [[i32; 64]; 6] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Phase calculation — fraction 0 = midgame, 1 = endgame
+// Phase calculation — 0 = midgame, 256 = endgame
 // ---------------------------------------------------------------------------
 
-/// Total material on the board (excluding Emperors).  We use this to
-/// interpolate opening → endgame evaluation.
-fn game_phase(board: &Board) -> f64 {
-    let mut total = 0i32;
-    for sq in 0..64 {
-        if let Some((_, kind)) = board.get(sq)
-            && kind != PieceKind::Emperor
-        {
-            total += match kind {
-                PieceKind::Empress => 2,
-                PieceKind::Priest => 2,
-                PieceKind::Paladin => 2,
-                PieceKind::Dragon => 1,
-                PieceKind::Knight => 0,
-                _ => 0,
-            };
-        }
+/// Material weight used for the phase blend. Knights are pawns here and do not
+/// shift the phase; emperors are excluded.
+fn phase_weight(kind: PieceKind) -> i32 {
+    match kind {
+        PieceKind::Empress | PieceKind::Priest | PieceKind::Paladin => 2,
+        PieceKind::Dragon => 1,
+        _ => 0,
     }
-    // Max = 2·2 ·2(Empress) ·2(Priest) ·2(Paladin) ·1·2(Dragon) = 14
-    // Phase goes from 0 (opening) to 1 (endgame)
-    (1.0 - (total as f64 / 14.0)).clamp(0.0, 1.0)
 }
 
 // ---------------------------------------------------------------------------
 // King-safety penalty
 // ---------------------------------------------------------------------------
 
-fn king_safety(board: &Board, color: Color) -> i32 {
-    let emperor_sq = match (0..64).find(|&sq| board.get(sq) == Some((color, PieceKind::Emperor))) {
-        Some(sq) => sq as i32,
-        None => return 0,
-    };
-
-    let file = emperor_sq % 8;
-    let rank = emperor_sq / 8;
+fn king_safety(board: &Board, color: Color, emperor_sq: usize) -> i32 {
+    let file = (emperor_sq % 8) as i32;
+    let rank = (emperor_sq / 8) as i32;
 
     // Front shield: are there friendly knights on the three squares in front?
     // We check the two ranks ahead (one or two ranks, depending on side).
@@ -217,11 +203,13 @@ fn mobility(board: &Board, color: Color) -> i32 {
 // ---------------------------------------------------------------------------
 
 pub fn evaluate(board: &Board) -> i32 {
-    let phase = game_phase(board);
     let mut score_mg = 0i32;
     let mut score_eg = 0i32;
+    let mut phase_total = 0i32;
+    let mut emperors = [None; 2];
+    let mut material = [0i32; 2];
 
-    // ----- material + PSQT -----
+    // ----- material + PSQT (one pass, collects phase and emperor squares) -----
     for sq in 0..64 {
         if let Some((color, kind)) = board.get(sq) {
             let idx = kind_index(kind);
@@ -241,12 +229,20 @@ pub fn evaluate(board: &Board) -> i32 {
             let mg = mg_mat + mg_pst;
             let eg = eg_mat + eg_pst;
 
+            let ci = if color == Color::White { 0 } else { 1 };
             if color == Color::White {
                 score_mg += mg;
                 score_eg += eg;
             } else {
                 score_mg -= mg;
                 score_eg -= eg;
+            }
+
+            phase_total += phase_weight(kind);
+            if kind == PieceKind::Emperor {
+                emperors[ci] = Some(sq);
+            } else {
+                material[ci] += mg_mat;
             }
         }
     }
@@ -264,11 +260,12 @@ pub fn evaluate(board: &Board) -> i32 {
     score_mg -= centre_control(board, Color::Black);
 
     // ----- king safety (midgame only) -----
-    let ks_w = king_safety(board, Color::White);
-    let ks_b = king_safety(board, Color::Black);
-    score_mg -= ks_w * 2; // penalty = opponent's shield is bad for us
-    score_mg += ks_b * 2;
-    // king safety fades in endgame (interpolation handles this)
+    if let Some(sq) = emperors[0] {
+        score_mg -= king_safety(board, Color::White, sq) * 2;
+    }
+    if let Some(sq) = emperors[1] {
+        score_mg += king_safety(board, Color::Black, sq) * 2;
+    }
 
     // ----- mobility (both phases) -----
     let mob_w = mobility(board, Color::White);
@@ -276,10 +273,49 @@ pub fn evaluate(board: &Board) -> i32 {
     score_mg += mob_w - mob_b;
     score_eg += (mob_w - mob_b) / 2; // less important in endgame
 
-    // ----- tapered blend -----
-    let mg_contrib = (1.0 - phase) * score_mg as f64;
-    let eg_contrib = phase * score_eg as f64;
-    (mg_contrib + eg_contrib) as i32
+    // ----- endgame conversion: drive a bare emperor to the edge -----
+    let advantage = material[0] - material[1];
+    if advantage >= 400
+        && !has_major_piece(board, Color::Black)
+        && let (Some(strong), Some(weak)) = (emperors[0], emperors[1])
+    {
+        score_eg += mop_up(strong, weak);
+    } else if advantage <= -400
+        && !has_major_piece(board, Color::White)
+        && let (Some(strong), Some(weak)) = (emperors[1], emperors[0])
+    {
+        score_eg -= mop_up(strong, weak);
+    }
+
+    // ----- tapered blend (0 = midgame, 256 = endgame) -----
+    let phase = ((14 - phase_total).clamp(0, 14) * 256) / 14;
+    (score_mg * (256 - phase) + score_eg * phase) / 256
+}
+
+pub(crate) fn has_major_piece(board: &Board, color: Color) -> bool {
+    (0..64).any(|sq| {
+        matches!(
+            board.get(sq),
+            Some((
+                c,
+                PieceKind::Empress | PieceKind::Priest | PieceKind::Paladin | PieceKind::Dragon
+            )) if c == color
+        )
+    })
+}
+
+/// Convert a material advantage: push the weak emperor to the edge and bring
+/// the strong one closer.
+fn mop_up(strong: usize, weak: usize) -> i32 {
+    let wf = (weak % 8) as i32;
+    let wr = (weak / 8) as i32;
+    let sf = (strong % 8) as i32;
+    let sr = (strong / 8) as i32;
+
+    let edge_distance = wf.min(7 - wf) + wr.min(7 - wr);
+    let emperor_distance = (wf - sf).abs() + (wr - sr).abs();
+
+    (6 - edge_distance) * 12 + (14 - emperor_distance) * 4
 }
 
 fn kind_index(kind: PieceKind) -> usize {
@@ -352,4 +388,34 @@ fn centre_control(board: &Board, color: Color) -> i32 {
         }
     }
     score
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chess_engine::{Board, Color, PieceKind};
+
+    #[test]
+    fn middlegame_emperor_prefers_home_rank() {
+        let home = Board::initial();
+        let mut advanced = Board::initial();
+        advanced.set(3, None);
+        advanced.set(27, Some((Color::White, PieceKind::Emperor)));
+        assert!(evaluate(&home) > evaluate(&advanced));
+    }
+
+    #[test]
+    fn mop_up_rewards_cornered_emperor() {
+        let mut cornered = Board::empty();
+        cornered.set(42, Some((Color::White, PieceKind::Emperor))); // c6
+        cornered.set(3, Some((Color::White, PieceKind::Empress))); // d1
+        cornered.set(56, Some((Color::Black, PieceKind::Emperor))); // a8
+
+        let mut central = Board::empty();
+        central.set(42, Some((Color::White, PieceKind::Emperor)));
+        central.set(3, Some((Color::White, PieceKind::Empress)));
+        central.set(28, Some((Color::Black, PieceKind::Emperor))); // e4
+
+        assert!(evaluate(&cornered) > evaluate(&central));
+    }
 }

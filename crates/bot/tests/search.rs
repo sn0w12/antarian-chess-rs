@@ -85,6 +85,21 @@ fn returns_none_without_legal_moves() {
 }
 
 #[test]
+fn takes_a_free_piece() {
+    let board = board_with(
+        &[
+            (4, Color::White, PieceKind::Emperor),  // e1
+            (3, Color::White, PieceKind::Empress),  // d1
+            (51, Color::Black, PieceKind::Priest),  // d7, undefended
+            (63, Color::Black, PieceKind::Emperor), // h8
+        ],
+        Color::White,
+    );
+    let result = find_best_move(&board, Duration::from_millis(500)).expect("legal moves exist");
+    assert_eq!(result.best_move, Move::new(3, 51, true));
+}
+
+#[test]
 fn self_play_only_returns_legal_moves() {
     let mut board = Board::initial();
     for ply in 0..16 {

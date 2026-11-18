@@ -12,8 +12,8 @@ pub fn generate_sliding_moves(
     directions: &[(i8, i8)],
     jump: bool,
     captures_only: bool,
-) -> Vec<Move> {
-    let mut moves = Vec::new();
+    moves: &mut Vec<Move>,
+) {
     let sqs = board.squares();
     for &(df, dr) in directions {
         let dir = match (df, dr) {
@@ -27,9 +27,8 @@ pub fn generate_sliding_moves(
             (1, 1) => 7,
             _ => continue,
         };
-        rays::generate_ray_moves(from, dir, sqs, color, captures_only, jump, &mut moves);
+        rays::generate_ray_moves(from, dir, sqs, color, captures_only, jump, moves);
     }
-    moves
 }
 
 /// Leaper moves defined by `offsets`.
@@ -40,10 +39,9 @@ pub fn generate_leaper_moves(
     offsets: &'static [(i8, i8)],
     jump: bool,
     captures_only: bool,
-) -> Vec<Move> {
-    let mut moves = Vec::new();
+    moves: &mut Vec<Move>,
+) {
     let sqs = board.squares();
     let set = rays::LeaperSet::new(offsets);
-    set.generate(from, sqs, color, captures_only, jump, &mut moves);
-    moves
+    set.generate(from, sqs, color, captures_only, jump, moves);
 }

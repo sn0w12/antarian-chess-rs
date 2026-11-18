@@ -100,6 +100,19 @@ fn optimized_legal_generation_matches_brute_force() {
                 board.squares()
             );
 
+            for color in [Color::White, Color::Black] {
+                assert_eq!(
+                    board.count_all_moves(color),
+                    board.generate_all_moves(color).len() as u32,
+                    "move count diverged for {color:?} at seed {seed:#x} ply {ply}"
+                );
+                assert_eq!(
+                    board.count_captures(color),
+                    board.generate_captures(color).len() as u32,
+                    "capture count diverged for {color:?} at seed {seed:#x} ply {ply}"
+                );
+            }
+
             let moves = brute_force_legal(&board, board.turn);
             if moves.is_empty() {
                 break;

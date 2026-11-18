@@ -4,6 +4,32 @@ use std::sync::OnceLock;
 
 pub const ZOBRIST_SIDE: u64 = 0x9D39247E_33776D41;
 
+const EMPEROR_OFFSETS: [(i8, i8); 8] = [
+    (-1, -1),
+    (-1, 0),
+    (-1, 1),
+    (0, -1),
+    (0, 1),
+    (1, -1),
+    (1, 0),
+    (1, 1),
+];
+
+const ALL_DIRS: [(i8, i8); 8] = EMPEROR_OFFSETS;
+
+const DIAG_DIRS: [(i8, i8); 4] = [(-1, -1), (-1, 1), (1, -1), (1, 1)];
+
+const KNIGHT_OFFSETS: [(i8, i8); 8] = [
+    (-2, 1),
+    (-1, 2),
+    (1, 2),
+    (2, 1),
+    (2, -1),
+    (1, -2),
+    (-1, -2),
+    (-2, -1),
+];
+
 static ZOBRIST: OnceLock<[[[u64; 64]; 2]; 6]> = OnceLock::new();
 
 fn get_zobrist() -> &'static [[[u64; 64]; 2]; 6] {
@@ -149,29 +175,33 @@ impl Board {
     }
 
     pub fn generate_moves_for(&self, square: usize, captures_only: bool) -> Vec<Move> {
+        let mut moves = Vec::new();
+        self.generate_moves_for_into(square, captures_only, &mut moves);
+        moves
+    }
+
+    fn generate_moves_for_into(&self, square: usize, captures_only: bool, moves: &mut Vec<Move>) {
         if let Some((color, kind)) = self.squares[square] {
             match kind {
                 PieceKind::Emperor => {
-                    pieces::generate_emperor_moves(self, square, color, captures_only)
+                    pieces::generate_emperor_moves(self, square, color, captures_only, moves)
                 }
                 PieceKind::Empress => {
-                    pieces::generate_empress_moves(self, square, color, captures_only)
+                    pieces::generate_empress_moves(self, square, color, captures_only, moves)
                 }
                 PieceKind::Priest => {
-                    pieces::generate_priest_moves(self, square, color, captures_only)
+                    pieces::generate_priest_moves(self, square, color, captures_only, moves)
                 }
                 PieceKind::Paladin => {
-                    pieces::generate_paladin_moves(self, square, color, captures_only)
+                    pieces::generate_paladin_moves(self, square, color, captures_only, moves)
                 }
                 PieceKind::Dragon => {
-                    pieces::generate_dragon_moves(self, square, color, captures_only)
+                    pieces::generate_dragon_moves(self, square, color, captures_only, moves)
                 }
                 PieceKind::Knight => {
-                    pieces::generate_knight_moves(self, square, color, captures_only)
+                    pieces::generate_knight_moves(self, square, color, captures_only, moves)
                 }
             }
-        } else {
-            Vec::new()
         }
     }
 
@@ -182,7 +212,7 @@ impl Board {
             if let Some((pc, _)) = self.squares[sq]
                 && pc == color
             {
-                moves.extend(self.generate_moves_for(sq, false));
+                self.generate_moves_for_into(sq, false, &mut moves);
             }
         }
         moves
@@ -195,7 +225,7 @@ impl Board {
             if let Some((pc, _)) = self.squares[sq]
                 && pc == color
             {
-                moves.extend(self.generate_moves_for(sq, true));
+                self.generate_moves_for_into(sq, true, &mut moves);
             }
         }
         moves
@@ -409,27 +439,185 @@ impl Board {
 
     /// Count pseudo-legal moves without allocating.
     pub fn count_all_moves(&self, color: Color) -> u32 {
+        self.count_moves(color, false)
+    }
+
+    /// Count pseudo-legal captures without allocating.
+    pub fn count_captures(&self, color: Color) -> u32 {
+        self.count_moves(color, true)
+    }
+
+    fn count_moves(&self, color: Color, captures_only: bool) -> u32 {
         let mut n = 0u32;
         for sq in 0..64 {
-            if let Some((pc, _)) = self.squares[sq]
+            if let Some((pc, kind)) = self.squares[sq]
                 && pc == color
             {
-                n += self.generate_moves_for(sq, false).len() as u32;
+                n += self.count_piece_moves(sq, kind, color, captures_only);
             }
         }
         n
     }
 
-    /// Count pseudo-legal captures without allocating.
-    pub fn count_captures(&self, color: Color) -> u32 {
-        let mut n = 0u32;
-        for sq in 0..64 {
-            if let Some((pc, _)) = self.squares[sq]
-                && pc == color
-            {
-                n += self.generate_moves_for(sq, true).len() as u32;
+    fn count_piece_moves(
+        &self,
+        from: usize,
+        kind: PieceKind,
+        color: Color,
+        captures_only: bool,
+    ) -> u32 {
+        match kind {
+            PieceKind::Emperor => self.count_leaper(from, color, &EMPEROR_OFFSETS, captures_only),
+            PieceKind::Empress => self.count_slider(from, color, &ALL_DIRS, captures_only),
+            PieceKind::Priest => {
+                self.count_slider(from, color, &DIAG_DIRS, captures_only)
+                    + self.count_leaper(from, color, &KNIGHT_OFFSETS, captures_only)
+            }
+            PieceKind::Paladin => {
+                self.count_leaper(from, color, &EMPEROR_OFFSETS, captures_only)
+                    + self.count_paladin_jumps(from, color, captures_only)
+            }
+            PieceKind::Dragon => self.count_dragon(from, color, captures_only),
+            PieceKind::Knight => self.count_knight(from, color, captures_only),
+        }
+    }
+
+    fn count_leaper(
+        &self,
+        from: usize,
+        color: Color,
+        offsets: &[(i8, i8)],
+        captures_only: bool,
+    ) -> u32 {
+        let (f, r) = index_to_coord(from);
+        let mut n = 0;
+        for &(df, dr) in offsets {
+            let Some(to) = coord_to_index(f + df, r + dr) else {
+                continue;
+            };
+            match self.squares[to] {
+                None => {
+                    if !captures_only {
+                        n += 1;
+                    }
+                }
+                Some((pc, _)) if pc != color => n += 1,
+                _ => {}
             }
         }
+        n
+    }
+
+    fn count_slider(
+        &self,
+        from: usize,
+        color: Color,
+        directions: &[(i8, i8)],
+        captures_only: bool,
+    ) -> u32 {
+        let (f, r) = index_to_coord(from);
+        let mut n = 0;
+        for &(df, dr) in directions {
+            let mut cf = f + df;
+            let mut cr = r + dr;
+            while let Some(to) = coord_to_index(cf, cr) {
+                match self.squares[to] {
+                    None => {
+                        if !captures_only {
+                            n += 1;
+                        }
+                    }
+                    Some((pc, _)) => {
+                        if pc != color {
+                            n += 1;
+                        }
+                        break;
+                    }
+                }
+                cf += df;
+                cr += dr;
+            }
+        }
+        n
+    }
+
+    fn count_paladin_jumps(&self, from: usize, color: Color, captures_only: bool) -> u32 {
+        let (f, r) = index_to_coord(from);
+        let mut n = 0;
+        for &(df, dr) in &[(0i8, 2i8), (0, -2), (2, 0), (-2, 0)] {
+            let Some(to) = coord_to_index(f + df, r + dr) else {
+                continue;
+            };
+            match self.squares[to] {
+                Some((pc, _)) if pc == color => continue,
+                None if captures_only => continue,
+                _ => {}
+            }
+            let intermediate = coord_to_index(f + df.signum(), r + dr.signum());
+            if matches!(intermediate, Some(idx) if self.squares[idx].is_none_or(|(pc, _)| pc == color))
+            {
+                n += 1;
+            }
+        }
+        n
+    }
+
+    fn count_dragon(&self, from: usize, color: Color, captures_only: bool) -> u32 {
+        let (f, r) = index_to_coord(from);
+        let mut n = 0;
+        for &(df, dr) in &[(0i8, 1i8), (0, -1), (1, 0), (-1, 0)] {
+            let mut cf = f + df;
+            let mut cr = r + dr;
+            while let Some(to) = coord_to_index(cf, cr) {
+                match self.squares[to] {
+                    None => {
+                        if !captures_only {
+                            n += 1;
+                        }
+                    }
+                    Some((pc, _)) => {
+                        if pc != color {
+                            n += 1;
+                            break;
+                        }
+                        // Friendly piece: jump over it and keep sliding.
+                    }
+                }
+                cf += df;
+                cr += dr;
+            }
+        }
+        n
+    }
+
+    fn count_knight(&self, from: usize, color: Color, captures_only: bool) -> u32 {
+        let (f, r) = index_to_coord(from);
+        let forward = if color == Color::White { 1 } else { -1 };
+        let start_rank = if color == Color::White { 1 } else { 6 };
+        let mut n = 0;
+
+        if !captures_only
+            && let Some(one) = coord_to_index(f, r + forward)
+            && self.squares[one].is_none()
+        {
+            n += 1;
+            if r == start_rank
+                && let Some(two) = coord_to_index(f, r + 2 * forward)
+                && self.squares[two].is_none()
+            {
+                n += 1;
+            }
+        }
+
+        for df in [-1, 1] {
+            if let Some(to) = coord_to_index(f + df, r + forward)
+                && let Some((pc, _)) = self.squares[to]
+                && pc != color
+            {
+                n += 1;
+            }
+        }
+
         n
     }
 
@@ -438,12 +626,18 @@ impl Board {
     /// Optimised with pin detection: when no opponent slider can discover a check,
     /// only the emperor's own moves need the full legality check.
     pub fn generate_legal_moves(&self, color: Color) -> Vec<Move> {
+        let in_check = self.is_in_check(color);
+        self.generate_legal_moves_with_check(color, in_check)
+    }
+
+    /// Same as [`Self::generate_legal_moves`], for callers that already computed
+    /// [`Self::is_in_check`] for `color`.
+    pub fn generate_legal_moves_with_check(&self, color: Color, in_check: bool) -> Vec<Move> {
         let pseudo = self.generate_all_moves(color);
         let king_sq = match self.find_king(color) {
             Some(sq) => sq,
             None => return pseudo,
         };
-        let in_check = self.is_in_check(color);
         let has_pins = in_check || self.has_pin_threat(king_sq, color);
 
         if !has_pins {
