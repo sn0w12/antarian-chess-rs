@@ -53,3 +53,8 @@ lto = true
 panic = "abort"
 strip = true
 codegen-units = 1
+
+[profile.profiling]
+inherits = "bench"
+debug = 2
+strip = false

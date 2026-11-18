@@ -1,4 +1,5 @@
 use crate::pieces;
+use crate::rays;
 use crate::types::{Color, GameResult, Move, PieceKind};
 use std::sync::OnceLock;
 
@@ -82,6 +83,7 @@ pub fn compute_zobrist(squares: &[Option<(Color, PieceKind)>; 64], turn: Color) 
 #[derive(Clone)]
 pub struct Board {
     squares: [Option<(Color, PieceKind)>; 64],
+    occupied: u64,
     pub turn: Color,
     pub zobrist: u64,
 }
@@ -90,6 +92,7 @@ impl Board {
     pub fn empty() -> Self {
         Board {
             squares: [None; 64],
+            occupied: 0,
             turn: Color::White,
             zobrist: 0,
         }
@@ -126,11 +129,35 @@ impl Board {
     }
 
     pub fn set(&mut self, square: usize, piece: Option<(Color, PieceKind)>) {
+        let bit = 1u64 << square;
+        if piece.is_some() {
+            self.occupied |= bit;
+        } else {
+            self.occupied &= !bit;
+        }
         self.squares[square] = piece;
     }
 
     pub fn get(&self, square: usize) -> Option<(Color, PieceKind)> {
         self.squares[square]
+    }
+
+    /// Bitmask of occupied squares, bit index = square index.
+    pub fn occupied(&self) -> u64 {
+        self.occupied
+    }
+
+    fn for_each_piece(&self, color: Color, mut f: impl FnMut(usize, PieceKind)) {
+        let mut occupied = self.occupied;
+        while occupied != 0 {
+            let square = occupied.trailing_zeros() as usize;
+            occupied &= occupied - 1;
+            if let Some((pc, kind)) = self.squares[square]
+                && pc == color
+            {
+                f(square, kind);
+            }
+        }
     }
 
     /// Get a reference to the squares array.
@@ -141,23 +168,30 @@ impl Board {
     /// Make a move, returning a new board. Zobrist is updated incrementally.
     pub fn make_move(&self, mv: &Move) -> Self {
         let mut new = self.clone();
-        let piece = new.squares[mv.from as usize].take();
+        let from = mv.from as usize;
+        let to = mv.to as usize;
+        let piece = new.squares[from].take();
+        new.occupied &= !(1u64 << from);
 
         // Remove piece from 'from' square in zobrist
         if let Some((color, kind)) = piece {
-            new.zobrist ^= zobrist_piece_square(color, kind, mv.from as usize);
+            new.zobrist ^= zobrist_piece_square(color, kind, from);
         }
 
         // Remove captured piece from zobrist
-        if let Some((cap_color, cap_kind)) = new.squares[mv.to as usize] {
-            new.zobrist ^= zobrist_piece_square(cap_color, cap_kind, mv.to as usize);
+        if let Some((cap_color, cap_kind)) = new.squares[to] {
+            new.zobrist ^= zobrist_piece_square(cap_color, cap_kind, to);
         }
+        new.occupied &= !(1u64 << to);
 
-        new.squares[mv.to as usize] = piece;
+        new.squares[to] = piece;
+        if piece.is_some() {
+            new.occupied |= 1u64 << to;
+        }
 
         // Add piece to 'to' square in zobrist
         if let Some((color, kind)) = piece {
-            new.zobrist ^= zobrist_piece_square(color, kind, mv.to as usize);
+            new.zobrist ^= zobrist_piece_square(color, kind, to);
         }
 
         // Flip side to move
@@ -208,50 +242,97 @@ impl Board {
     /// Generate all legal moves for a color.
     pub fn generate_all_moves(&self, color: Color) -> Vec<Move> {
         let mut moves = Vec::with_capacity(128);
-        for sq in 0..64 {
-            if let Some((pc, _)) = self.squares[sq]
-                && pc == color
-            {
-                self.generate_moves_for_into(sq, false, &mut moves);
-            }
-        }
+        self.for_each_piece(color, |sq, _| {
+            self.generate_moves_for_into(sq, false, &mut moves);
+        });
         moves
     }
 
     /// Generate only capture moves for a color. Faster than generating all+filtering.
     pub fn generate_captures(&self, color: Color) -> Vec<Move> {
         let mut moves = Vec::with_capacity(32);
-        for sq in 0..64 {
-            if let Some((pc, _)) = self.squares[sq]
-                && pc == color
-            {
-                self.generate_moves_for_into(sq, true, &mut moves);
-            }
-        }
+        self.for_each_piece(color, |sq, _| {
+            self.generate_moves_for_into(sq, true, &mut moves);
+        });
         moves
     }
 
     // ---- Legal‑move filtering (king safety) ----
 
     fn find_king(&self, color: Color) -> Option<usize> {
-        (0..64).find(|&sq| self.squares[sq] == Some((color, PieceKind::Emperor)))
+        let mut occupied = self.occupied;
+        while occupied != 0 {
+            let square = occupied.trailing_zeros() as usize;
+            occupied &= occupied - 1;
+            if self.squares[square] == Some((color, PieceKind::Emperor)) {
+                return Some(square);
+            }
+        }
+        None
     }
 
     /// Returns `true` if `color`'s emperor is attacked by any opponent piece.
+    ///
+    /// Scans outward from the emperor instead of walking every enemy piece.
     pub fn is_in_check(&self, color: Color) -> bool {
-        let king_sq = match self.find_king(color) {
-            Some(sq) => sq,
-            None => return false,
+        let Some(king_sq) = self.find_king(color) else {
+            return false;
         };
-        let opp = color.opposite();
-        for sq in 0..64 {
-            if let Some((pc, kind)) = self.squares[sq]
-                && pc == opp
-                && self.attacks(sq, kind, pc, king_sq)
+        let opponent = color.opposite();
+        let (kf, kr) = index_to_coord(king_sq);
+
+        // Knights (pawns) capture one rank forward, diagonally.
+        let knight_rank = kr + if color == Color::White { 1 } else { -1 };
+        for df in [-1i8, 1] {
+            if let Some(sq) = coord_to_index(kf + df, knight_rank)
+                && self.squares[sq] == Some((opponent, PieceKind::Knight))
             {
                 return true;
             }
         }
+
+        // Priests jump like knights.
+        for &(df, dr) in &KNIGHT_OFFSETS {
+            if let Some(sq) = coord_to_index(kf + df, kr + dr)
+                && self.squares[sq] == Some((opponent, PieceKind::Priest))
+            {
+                return true;
+            }
+        }
+
+        // Along every ray: adjacent emperors/paladins, sliders, and the
+        // paladin's two-square jump. A dragon jumps its own pieces, so
+        // orthogonal rays continue past them; other sliders stop at a blocker.
+        for (direction, &(df, dr)) in rays::DIRECTIONS.iter().enumerate() {
+            let orthogonal = df == 0 || dr == 0;
+            let diagonal = df.abs() == dr.abs();
+            let mut distance = 0;
+            let mut blocked = false;
+            for &to in rays::ray(king_sq, direction) {
+                distance += 1;
+                if let Some((pc, kind)) = self.squares[to as usize] {
+                    if pc == color {
+                        break;
+                    }
+                    let attacks = match kind {
+                        PieceKind::Emperor => distance == 1,
+                        PieceKind::Paladin => distance == 1 || (orthogonal && distance == 2),
+                        PieceKind::Empress => !blocked,
+                        PieceKind::Priest => diagonal && !blocked,
+                        PieceKind::Dragon => orthogonal,
+                        PieceKind::Knight => false,
+                    };
+                    if attacks {
+                        return true;
+                    }
+                    if !orthogonal {
+                        break;
+                    }
+                    blocked = true;
+                }
+            }
+        }
+
         false
     }
 
@@ -261,24 +342,12 @@ impl Board {
     /// a `true` result only costs the caller a full legality check per move.
     fn has_pin_threat(&self, king_sq: usize, color: Color) -> bool {
         let (kf, kr) = index_to_coord(king_sq);
-        const DIRS: [(i8, i8); 8] = [
-            (-1, -1),
-            (-1, 0),
-            (-1, 1),
-            (0, -1),
-            (0, 1),
-            (1, -1),
-            (1, 0),
-            (1, 1),
-        ];
-        for &(df, dr) in &DIRS {
+        for (direction, &(df, dr)) in rays::DIRECTIONS.iter().enumerate() {
             let orthogonal = df == 0 || dr == 0;
             let diagonal = df.abs() == dr.abs();
             let mut friendly_seen = false;
-            let mut cf = kf + df;
-            let mut cr = kr + dr;
-            while let Some(idx) = coord_to_index(cf, cr) {
-                match self.squares[idx] {
+            for &idx in rays::ray(king_sq, direction) {
+                match self.squares[idx as usize] {
                     None => {}
                     Some((pc, kind)) => {
                         if pc == color {
@@ -298,8 +367,6 @@ impl Board {
                         }
                     }
                 }
-                cf += df;
-                cr += dr;
             }
         }
 
@@ -324,6 +391,7 @@ impl Board {
     }
 
     /// Fast targeted attack check — does a piece of `kind` at `from` attack `to`?
+    #[cfg(test)]
     fn attacks(&self, from: usize, kind: PieceKind, color: Color, to: usize) -> bool {
         if from == to {
             return false;
@@ -410,6 +478,7 @@ impl Board {
         }
     }
 
+    #[cfg(test)]
     fn sliding_attack(&self, from: usize, to: usize, direction_match: fn(i8, i8) -> bool) -> bool {
         let (ff, fr) = index_to_coord(from);
         let (tf, tr) = index_to_coord(to);
@@ -449,13 +518,9 @@ impl Board {
 
     fn count_moves(&self, color: Color, captures_only: bool) -> u32 {
         let mut n = 0u32;
-        for sq in 0..64 {
-            if let Some((pc, kind)) = self.squares[sq]
-                && pc == color
-            {
-                n += self.count_piece_moves(sq, kind, color, captures_only);
-            }
-        }
+        self.for_each_piece(color, |sq, kind| {
+            n += self.count_piece_moves(sq, kind, color, captures_only);
+        });
         n
     }
 
@@ -633,7 +698,7 @@ impl Board {
     /// Same as [`Self::generate_legal_moves`], for callers that already computed
     /// [`Self::is_in_check`] for `color`.
     pub fn generate_legal_moves_with_check(&self, color: Color, in_check: bool) -> Vec<Move> {
-        let pseudo = self.generate_all_moves(color);
+        let mut pseudo = self.generate_all_moves(color);
         let king_sq = match self.find_king(color) {
             Some(sq) => sq,
             None => return pseudo,
@@ -642,27 +707,23 @@ impl Board {
 
         if !has_pins {
             // No pins: only the emperor's own moves need checking.
-            pseudo
-                .into_iter()
-                .filter(|mv| {
-                    if mv.from as usize == king_sq {
-                        let child = self.make_move(mv);
-                        !child.is_in_check(color)
-                    } else {
-                        true
-                    }
-                })
-                .collect()
-        } else {
-            // In check or a pin exists: check every move.
-            pseudo
-                .into_iter()
-                .filter(|mv| {
+            pseudo.retain(|mv| {
+                if mv.from as usize == king_sq {
                     let child = self.make_move(mv);
                     !child.is_in_check(color)
-                })
-                .collect()
+                } else {
+                    true
+                }
+            });
+        } else {
+            // In check or a pin exists: check every move.
+            pseudo.retain(|mv| {
+                let child = self.make_move(mv);
+                !child.is_in_check(color)
+            });
         }
+
+        pseudo
     }
 
     /// Legal capture‑only moves (for quiescence search).
@@ -706,5 +767,116 @@ pub fn coord_to_index(file: i8, rank: i8) -> Option<usize> {
         Some((rank * 8 + file) as usize)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+    }
+
+    fn reference_in_check(board: &Board, color: Color) -> bool {
+        let Some(king) = (0..64).find(|&sq| board.get(sq) == Some((color, PieceKind::Emperor)))
+        else {
+            return false;
+        };
+        for sq in 0..64 {
+            if let Some((pc, kind)) = board.get(sq)
+                && pc != color
+                && board.attacks(sq, kind, pc, king)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn random_kind(rng: &mut Rng) -> PieceKind {
+        match rng.next() % 5 {
+            0 => PieceKind::Empress,
+            1 => PieceKind::Priest,
+            2 => PieceKind::Paladin,
+            3 => PieceKind::Dragon,
+            _ => PieceKind::Knight,
+        }
+    }
+
+    fn place_random(rng: &mut Rng, board: &mut Board, color: Color, kind: PieceKind) {
+        for _ in 0..64 {
+            let square = (rng.next() % 64) as usize;
+            if board.get(square).is_none() {
+                board.set(square, Some((color, kind)));
+                return;
+            }
+        }
+    }
+
+    fn assert_occupied_matches_squares(board: &Board) {
+        let mut expected = 0u64;
+        for sq in 0..64 {
+            if board.get(sq).is_some() {
+                expected |= 1u64 << sq;
+            }
+        }
+        assert_eq!(board.occupied(), expected);
+    }
+
+    #[test]
+    fn is_in_check_matches_full_piece_scan() {
+        let mut rng = Rng(0x1234_5678_9ABC_DEF0);
+
+        for _ in 0..400 {
+            let mut board = Board::empty();
+            place_random(&mut rng, &mut board, Color::White, PieceKind::Emperor);
+            place_random(&mut rng, &mut board, Color::Black, PieceKind::Emperor);
+            for _ in 0..(rng.next() % 8) {
+                let color = if rng.next() & 1 == 0 {
+                    Color::White
+                } else {
+                    Color::Black
+                };
+                let kind = random_kind(&mut rng);
+                place_random(&mut rng, &mut board, color, kind);
+            }
+            assert_occupied_matches_squares(&board);
+            for color in [Color::White, Color::Black] {
+                assert_eq!(
+                    board.is_in_check(color),
+                    reference_in_check(&board, color),
+                    "{color:?} on {:?}",
+                    board.squares()
+                );
+            }
+        }
+
+        let mut board = Board::initial();
+        for ply in 0..300 {
+            assert_occupied_matches_squares(&board);
+            for color in [Color::White, Color::Black] {
+                assert_eq!(
+                    board.is_in_check(color),
+                    reference_in_check(&board, color),
+                    "{color:?} at ply {ply}"
+                );
+            }
+            let moves = board.generate_legal_moves(board.turn);
+            if moves.is_empty() {
+                break;
+            }
+            let mv = moves[(rng.next() % moves.len() as u64) as usize];
+            board = board.make_move(&mv);
+        }
     }
 }

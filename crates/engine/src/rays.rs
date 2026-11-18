@@ -11,6 +11,9 @@ const DIR_OFFSETS: [(i8, i8); 8] = [
     (1, 1),
 ];
 
+/// Directions in the same order [`ray`] indexes them.
+pub const DIRECTIONS: [(i8, i8); 8] = DIR_OFFSETS;
+
 static RAYS: OnceLock<[[&[u8]; 8]; 64]> = OnceLock::new();
 
 fn build_rays() -> [[&'static [u8]; 8]; 64] {
@@ -35,6 +38,26 @@ fn build_rays() -> [[&'static [u8]; 8]; 64] {
 
 fn get_rays() -> &'static [[&'static [u8]; 8]; 64] {
     RAYS.get_or_init(build_rays)
+}
+
+/// Direction index used by [`ray`] and [`generate_ray_moves`].
+pub fn direction_index(df: i8, dr: i8) -> Option<usize> {
+    Some(match (df, dr) {
+        (-1, -1) => 0,
+        (-1, 0) => 1,
+        (-1, 1) => 2,
+        (0, -1) => 3,
+        (0, 1) => 4,
+        (1, -1) => 5,
+        (1, 0) => 6,
+        (1, 1) => 7,
+        _ => return None,
+    })
+}
+
+/// Squares from `sq` outward in `direction`, nearest first.
+pub fn ray(sq: usize, direction: usize) -> &'static [u8] {
+    get_rays()[sq][direction]
 }
 
 /// Walk a pre-computed ray to generate sliding moves.

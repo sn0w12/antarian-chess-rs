@@ -210,40 +210,45 @@ pub fn evaluate(board: &Board) -> i32 {
     let mut material = [0i32; 2];
 
     // ----- material + PSQT (one pass, collects phase and emperor squares) -----
-    for sq in 0..64 {
-        if let Some((color, kind)) = board.get(sq) {
-            let idx = kind_index(kind);
-            let mg_mat = MG[idx];
-            let eg_mat = EG[idx];
-            let mg_pst = if color == Color::White {
-                PST_MG[idx][sq]
-            } else {
-                PST_MG[idx][sq ^ 56]
-            };
-            let eg_pst = if color == Color::White {
-                PST_EG[idx][sq]
-            } else {
-                PST_EG[idx][sq ^ 56]
-            };
+    let mut occupied = board.occupied();
+    while occupied != 0 {
+        let sq = occupied.trailing_zeros() as usize;
+        occupied &= occupied - 1;
+        let Some((color, kind)) = board.get(sq) else {
+            continue;
+        };
 
-            let mg = mg_mat + mg_pst;
-            let eg = eg_mat + eg_pst;
+        let idx = kind_index(kind);
+        let mg_mat = MG[idx];
+        let eg_mat = EG[idx];
+        let mg_pst = if color == Color::White {
+            PST_MG[idx][sq]
+        } else {
+            PST_MG[idx][sq ^ 56]
+        };
+        let eg_pst = if color == Color::White {
+            PST_EG[idx][sq]
+        } else {
+            PST_EG[idx][sq ^ 56]
+        };
 
-            let ci = if color == Color::White { 0 } else { 1 };
-            if color == Color::White {
-                score_mg += mg;
-                score_eg += eg;
-            } else {
-                score_mg -= mg;
-                score_eg -= eg;
-            }
+        let mg = mg_mat + mg_pst;
+        let eg = eg_mat + eg_pst;
 
-            phase_total += phase_weight(kind);
-            if kind == PieceKind::Emperor {
-                emperors[ci] = Some(sq);
-            } else {
-                material[ci] += mg_mat;
-            }
+        if color == Color::White {
+            score_mg += mg;
+            score_eg += eg;
+        } else {
+            score_mg -= mg;
+            score_eg -= eg;
+        }
+
+        let ci = if color == Color::White { 0 } else { 1 };
+        phase_total += phase_weight(kind);
+        if kind == PieceKind::Emperor {
+            emperors[ci] = Some(sq);
+        } else {
+            material[ci] += mg_mat;
         }
     }
 
@@ -325,21 +330,30 @@ fn kind_index(kind: PieceKind) -> usize {
 fn knight_structure(board: &Board, color: Color) -> i32 {
     let mut bonus = 0i32;
     let home_rank = if color == Color::White { 1 } else { 6 };
-    for sq in 0..64 {
-        if board.get(sq) == Some((color, PieceKind::Knight)) {
-            let rank = sq / 8;
-            let file = (sq % 8) as i32;
-            // Connected pawns
-            if file > 0 && board.get(sq - 1) == Some((color, PieceKind::Knight)) {
-                bonus += 15;
-            }
-            if file < 7 && board.get(sq + 1) == Some((color, PieceKind::Knight)) {
-                bonus += 15;
-            }
-            // Advancement bonus on top of PST
-            if rank > home_rank {
-                bonus += (rank as i32 - home_rank as i32) * 8;
-            }
+    let mut occupied = board.occupied();
+    while occupied != 0 {
+        let sq = occupied.trailing_zeros() as usize;
+        occupied &= occupied - 1;
+        if board.get(sq) != Some((color, PieceKind::Knight)) {
+            continue;
+        }
+        let rank = (sq / 8) as i32;
+        let file = (sq % 8) as i32;
+        // Connected knights
+        if file > 0 && board.get(sq - 1) == Some((color, PieceKind::Knight)) {
+            bonus += 15;
+        }
+        if file < 7 && board.get(sq + 1) == Some((color, PieceKind::Knight)) {
+            bonus += 15;
+        }
+        // Advancement bonus on top of PST (toward the opponent's side).
+        let advance = if color == Color::White {
+            rank - home_rank
+        } else {
+            home_rank - rank
+        };
+        if advance > 0 {
+            bonus += advance * 8;
         }
     }
     bonus
@@ -365,7 +379,7 @@ fn development(board: &Board, color: Color) -> i32 {
             };
         }
     }
-    // Also penalise knights that haven't advanced past rank 1 from their start.
+    // Also penalise knights that haven't left their start rank.
     let pawn_rank = if color == Color::White { 1 } else { 6 };
     for file in 0..8 {
         let sq = pawn_rank * 8 + file;
@@ -417,5 +431,56 @@ mod tests {
         central.set(28, Some((Color::Black, PieceKind::Emperor))); // e4
 
         assert!(evaluate(&cornered) > evaluate(&central));
+    }
+}
+
+#[cfg(test)]
+mod symmetry_tests {
+    use super::*;
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+    }
+
+    fn mirrored(board: &Board) -> Board {
+        let mut result = Board::empty();
+        for sq in 0..64 {
+            if let Some((color, kind)) = board.get(sq) {
+                result.set(sq ^ 56, Some((color.opposite(), kind)));
+            }
+        }
+        result.turn = board.turn.opposite();
+        result
+    }
+
+    #[test]
+    fn evaluation_is_color_symmetric() {
+        let mut rng = Rng(0x0BAD_F00D_DEAD_BEEF);
+        let mut board = Board::initial();
+
+        for ply in 0..200 {
+            assert_eq!(
+                evaluate(&mirrored(&board)),
+                -evaluate(&board),
+                "asymmetric at ply {ply}: {:?}",
+                board.squares()
+            );
+
+            let moves = board.generate_legal_moves(board.turn);
+            if moves.is_empty() {
+                break;
+            }
+            let mv = moves[(rng.next() % moves.len() as u64) as usize];
+            board = board.make_move(&mv);
+        }
     }
 }
