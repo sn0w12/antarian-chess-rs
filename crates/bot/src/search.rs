@@ -642,62 +642,91 @@ impl SearchThread {
 // Public API: find_best_move with Lazy SMP
 // ---------------------------------------------------------------------------
 
-pub fn find_best_move(board: &Board, time_limit: Duration) -> Option<SearchResult> {
-    let tt = Arc::new(TranspositionTable::new());
-    let stop = Arc::new(AtomicBool::new(false));
-    let best_result: SharedBest = Arc::new(Mutex::new(None));
+/// Reusable search state. The transposition table is kept between calls so
+/// later moves build on the subtrees the previous search already resolved.
+#[derive(Clone, Default)]
+pub struct Searcher {
+    tt: Arc<TranspositionTable>,
+}
 
-    let num_threads = std::thread::available_parallelism()
-        .map(|n| n.get().min(8))
-        .unwrap_or(1);
-
-    // Timeout thread
-    let stop_clone = stop.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(time_limit);
-        stop_clone.store(true, Ordering::SeqCst);
-    });
-
-    // Search threads
-    let mut handles = Vec::with_capacity(num_threads);
-    for thread_id in 0..num_threads {
-        let tt = tt.clone();
-        let stop = stop.clone();
-        let best = best_result.clone();
-        let b = board.clone();
-
-        handles.push(std::thread::spawn(move || {
-            let mut searcher = SearchThread::new(tt, stop, best);
-            searcher.iterative_deepen(&b, thread_id as u32);
-        }));
-    }
-
-    // Wait for all search threads to finish
-    for h in handles {
-        let _ = h.join();
-    }
-
-    {
-        let guard = best_result.lock().unwrap();
-        if let Some(&(mv, score, depth, nodes)) = guard.as_ref()
-            && mv != Move::NULL
-        {
-            return Some(SearchResult {
-                best_move: mv,
-                score,
-                depth,
-                nodes,
-            });
+impl Searcher {
+    pub fn new() -> Self {
+        Self {
+            tt: Arc::new(TranspositionTable::new()),
         }
     }
-    board
-        .generate_legal_moves(board.turn)
-        .first()
-        .copied()
-        .map(|mv| SearchResult {
-            best_move: mv,
-            score: 0,
-            depth: 0,
-            nodes: 0,
-        })
+
+    pub fn clear(&self) {
+        self.tt.clear();
+    }
+
+    pub fn find_best_move(&self, board: &Board, time_limit: Duration) -> Option<SearchResult> {
+        // Bound memory over a long game; clearing is rare and only costs reuse.
+        if self.tt.entry_count() > 1_500_000 {
+            self.tt.clear();
+        }
+
+        let tt = self.tt.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let best_result: SharedBest = Arc::new(Mutex::new(None));
+
+        let num_threads = std::thread::available_parallelism()
+            .map(|n| n.get().min(8))
+            .unwrap_or(1);
+
+        // Timeout thread
+        let stop_clone = stop.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(time_limit);
+            stop_clone.store(true, Ordering::SeqCst);
+        });
+
+        // Search threads
+        let mut handles = Vec::with_capacity(num_threads);
+        for thread_id in 0..num_threads {
+            let tt = tt.clone();
+            let stop = stop.clone();
+            let best = best_result.clone();
+            let b = board.clone();
+
+            handles.push(std::thread::spawn(move || {
+                let mut searcher = SearchThread::new(tt, stop, best);
+                searcher.iterative_deepen(&b, thread_id as u32);
+            }));
+        }
+
+        // Wait for all search threads to finish
+        for h in handles {
+            let _ = h.join();
+        }
+
+        {
+            let guard = best_result.lock().unwrap();
+            if let Some(&(mv, score, depth, nodes)) = guard.as_ref()
+                && mv != Move::NULL
+            {
+                return Some(SearchResult {
+                    best_move: mv,
+                    score,
+                    depth,
+                    nodes,
+                });
+            }
+        }
+        board
+            .generate_legal_moves(board.turn)
+            .first()
+            .copied()
+            .map(|mv| SearchResult {
+                best_move: mv,
+                score: 0,
+                depth: 0,
+                nodes: 0,
+            })
+    }
+}
+
+/// One-shot search with a fresh transposition table.
+pub fn find_best_move(board: &Board, time_limit: Duration) -> Option<SearchResult> {
+    Searcher::new().find_best_move(board, time_limit)
 }

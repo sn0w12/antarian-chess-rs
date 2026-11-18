@@ -1,5 +1,5 @@
 use crate::{ChessApp, WsCommand, audio, dialogs::ConfirmDialogOptions};
-use chess_bot::find_best_move;
+use chess_bot::Searcher;
 use chess_engine::*;
 use chess_server::protocol::ClientMessage;
 use gpui::{
@@ -169,6 +169,7 @@ pub struct ChessBoard {
 
     pub bot_score: Option<i32>,
     pub bot_depth: Option<u32>,
+    bot_searcher: Searcher,
 
     last_move: Option<Move>,
     chat_messages: Vec<ChatEntry>,
@@ -205,6 +206,7 @@ impl ChessBoard {
             timer_generation: 0,
             bot_score: None,
             bot_depth: None,
+            bot_searcher: Searcher::new(),
             last_move: None,
             chat_messages: Vec::new(),
             chat_input,
@@ -236,6 +238,7 @@ impl ChessBoard {
         self.rematch_state = RematchState::Hidden;
         self.bot_score = None;
         self.bot_depth = None;
+        self.bot_searcher.clear();
         self.last_move = None;
         self.chat_messages.clear();
         self.chat_item_sizes = Rc::new(Vec::new());
@@ -487,7 +490,7 @@ impl ChessBoard {
                 self.black_time,
                 self.move_count,
             );
-            Self::schedule_bot(&self.game_state, cx, time);
+            self.schedule_bot(&self.game_state, cx, time);
         }
     }
 
@@ -519,11 +522,12 @@ impl ChessBoard {
         }
     }
 
-    fn schedule_bot(board: &Board, cx: &Context<Self>, think_duration: Duration) {
+    fn schedule_bot(&self, board: &Board, cx: &Context<Self>, think_duration: Duration) {
         let board = board.clone();
+        let searcher = self.bot_searcher.clone();
         let task = cx
             .background_executor()
-            .spawn(async move { find_best_move(&board, think_duration) });
+            .spawn(async move { searcher.find_best_move(&board, think_duration) });
 
         cx.spawn(|weak: WeakEntity<ChessBoard>, async_app: &mut AsyncApp| {
             let app = async_app.clone();

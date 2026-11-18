@@ -58,7 +58,10 @@ impl TranspositionTable {
         }
     }
 
-    #[allow(dead_code)]
+    pub fn entry_count(&self) -> usize {
+        self.map.len()
+    }
+
     pub fn clear(&self) {
         self.map.clear();
     }

@@ -1,4 +1,4 @@
-use chess_bot::{find_best_move, mate_distance};
+use chess_bot::{Searcher, find_best_move, mate_distance};
 use chess_engine::*;
 use std::time::Duration;
 
@@ -101,13 +101,16 @@ fn takes_a_free_piece() {
 
 #[test]
 fn self_play_only_returns_legal_moves() {
+    let searcher = Searcher::new();
     let mut board = Board::initial();
     for ply in 0..16 {
         if board.game_result() != GameResult::Ongoing {
             break;
         }
         let legal = board.generate_legal_moves(board.turn);
-        let result = find_best_move(&board, Duration::from_millis(40)).expect("legal moves exist");
+        let result = searcher
+            .find_best_move(&board, Duration::from_millis(40))
+            .expect("legal moves exist");
         assert!(
             legal.contains(&result.best_move),
             "illegal move {:?} at ply {ply}",
