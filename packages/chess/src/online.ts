@@ -10,7 +10,7 @@ import type {
 import type { Color, EngineOptions, Move, SquareInput } from "./types.js";
 
 export const PROTOCOL_VERSION = 1;
-export const DEFAULT_SERVER_URL = "wss://chess.arathia.net/";
+export const DEFAULT_SERVER_URL = "wss://chess-server.arathia.net/";
 
 const PING_INTERVAL_MS = 20_000;
 

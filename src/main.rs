@@ -45,7 +45,7 @@ use crate::components::chess_board::{
     ChessBoard, FirstMove, GameMode, LiveMove, NextMove, PrevMove,
 };
 
-const WS_URL: &str = "wss://chess.arathia.net/";
+const WS_URL: &str = "wss://chess-server.arathia.net/";
 const PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Clone, Debug)]
