@@ -389,6 +389,46 @@ function Captured({
   );
 }
 
+function RematchPanel({ controls }: { controls: RematchControls }) {
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-border/60 p-2">
+      <span className="text-sm">Rematch</span>
+      {controls.requestedByOpponent ? (
+        <>
+          <span className="text-sm text-muted-foreground">
+            Your opponent wants a rematch.
+          </span>
+          <div className="flex gap-2">
+            <Button className="flex-1" onClick={controls.onAccept}>
+              Accept
+            </Button>
+            <Button
+              className="flex-1"
+              variant="outline"
+              onClick={controls.onDecline}
+            >
+              Decline
+            </Button>
+          </div>
+        </>
+      ) : controls.requested ? (
+        <span className="text-sm text-muted-foreground">
+          Rematch request sent. Waiting for your opponent.
+        </span>
+      ) : controls.declined ? (
+        <span className="text-sm text-muted-foreground">Rematch declined.</span>
+      ) : (
+        <>
+          <span className="text-sm text-muted-foreground">
+            Want another game with the same opponent?
+          </span>
+          <Button onClick={controls.onRequest}>Request Rematch</Button>
+        </>
+      )}
+    </div>
+  );
+}
+
 function LeaveButton({
   onLeave,
   compact = false,
