@@ -68,7 +68,11 @@ export function BotPage() {
           interactive={game.interactive}
           onSelect={game.select}
           onMove={game.play}
-          centipawns={game.material}
+          centipawns={
+            reviewing || game.botScore === null
+              ? game.material
+              : game.botScore
+          }
         />
       }
       sidebar={
