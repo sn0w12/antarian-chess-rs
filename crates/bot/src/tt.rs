@@ -22,6 +22,11 @@ pub enum TTFlag {
     UpperBound = 2,
 }
 
+// The browser build keeps the table small enough to coexist with the page's
+// own memory; native builds can afford the larger table.
+#[cfg(target_arch = "wasm32")]
+const SLOT_BITS: usize = 20;
+#[cfg(not(target_arch = "wasm32"))]
 const SLOT_BITS: usize = 23;
 const SLOT_COUNT: usize = 1 << SLOT_BITS;
 const SCORE_OFFSET: i32 = 1 << 17;

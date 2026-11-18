@@ -656,6 +656,7 @@ impl ChessApp {
                     cx.notify();
                 });
             }
+            ServerMessage::Pong => {}
             ServerMessage::Error { message } => {
                 if self.view == View::OnlineWaiting {
                     self.online_status = format!("Server error: {message}");

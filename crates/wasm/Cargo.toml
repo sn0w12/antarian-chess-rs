@@ -1,0 +1,11 @@
+[package]
+name = "chess_wasm"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+chess_bot = { path = "../bot" }
+chess_engine = { path = "../engine" }

@@ -97,6 +97,8 @@ pub enum ClientMessage {
         /// Chat message body.
         message: String,
     },
+    /// Keep-alive for browser clients, which cannot send WebSocket ping frames.
+    Ping,
     /// Gracefully disconnect from the websocket session.
     Disconnect {
         /// Optional human-readable reason.
@@ -201,6 +203,8 @@ pub enum ServerMessage {
         /// Chat message body.
         message: String,
     },
+    /// Reply to [`ClientMessage::Ping`].
+    Pong,
     /// A generic error in response to a malformed or illegal request.
     Error {
         /// Human-readable explanation of what went wrong.

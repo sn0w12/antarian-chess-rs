@@ -270,14 +270,29 @@ impl SearchThread {
 
     /// Full iterative deepening loop for one Lazy SMP thread.
     pub fn iterative_deepen(&mut self, board: &Board, thread_id: u32) {
-        let color = board.turn;
         // Stagger the starting depth so threads do not duplicate the same
         // iterations in lockstep.
-        let mut depth = 1 + thread_id % 4;
+        self.run_deepening(board, 1 + thread_id % 4, None);
+    }
+
+    /// Iterative deepening on the current thread, stopping after `max_depth`.
+    /// Used where spawning search threads is not available, such as WebAssembly.
+    pub fn iterative_deepen_to(&mut self, board: &Board, max_depth: u32) {
+        self.run_deepening(board, 1, Some(max_depth));
+    }
+
+    fn run_deepening(&mut self, board: &Board, start_depth: u32, max_depth: Option<u32>) {
+        let color = board.turn;
+        let mut depth = start_depth;
         let mut last_score = 0;
 
         loop {
             if self.stopped() {
+                break;
+            }
+            if let Some(limit) = max_depth
+                && depth > limit
+            {
                 break;
             }
 
@@ -1029,30 +1044,44 @@ impl Searcher {
             let _ = h.join();
         }
 
-        {
-            let guard = best_result.lock().unwrap();
-            if let Some(&(mv, score, depth, nodes)) = guard.as_ref()
-                && mv != Move::NULL
-            {
-                return Some(SearchResult {
-                    best_move: mv,
-                    score,
-                    depth,
-                    nodes,
-                });
-            }
-        }
-        board
-            .generate_legal_moves(board.turn)
-            .first()
-            .copied()
-            .map(|mv| SearchResult {
-                best_move: mv,
-                score: 0,
-                depth: 0,
-                nodes: 0,
-            })
+        read_result(board, &best_result)
     }
+
+    /// Depth-limited search on the current thread. Used on targets without
+    /// thread support, such as WebAssembly.
+    pub fn find_best_move_depth(&self, board: &Board, depth: u32) -> Option<SearchResult> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let best_result: SharedBest = Arc::new(Mutex::new(None));
+        let mut searcher = SearchThread::new(self.tt.clone(), stop, best_result.clone());
+        searcher.iterative_deepen_to(board, depth.max(1));
+        read_result(board, &best_result)
+    }
+}
+
+fn read_result(board: &Board, best_result: &SharedBest) -> Option<SearchResult> {
+    {
+        let guard = best_result.lock().unwrap();
+        if let Some(&(mv, score, depth, nodes)) = guard.as_ref()
+            && mv != Move::NULL
+        {
+            return Some(SearchResult {
+                best_move: mv,
+                score,
+                depth,
+                nodes,
+            });
+        }
+    }
+    board
+        .generate_legal_moves(board.turn)
+        .first()
+        .copied()
+        .map(|mv| SearchResult {
+            best_move: mv,
+            score: 0,
+            depth: 0,
+            nodes: 0,
+        })
 }
 
 /// One-shot search with a fresh transposition table.

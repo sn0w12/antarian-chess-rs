@@ -5,7 +5,7 @@ edition = "2024"
 default-run = "antarian-chess-rs"
 
 [workspace]
-members = ["crates/bot", "crates/engine", "crates/server"]
+members = ["crates/bot", "crates/engine", "crates/server", "crates/wasm"]
 default-members = [".", "crates/bot", "crates/engine", "crates/server"]
 resolver = "3"
 

@@ -892,6 +892,10 @@ pub async fn handle_connection(stream: TcpStream, server: GameServer) {
                     server.send_chat(pid, &game_id, &message).await;
                 }
             }
+
+            ClientMessage::Ping => {
+                let _ = tx.send(ServerMessage::Pong);
+            }
             ClientMessage::Disconnect { reason } => {
                 if let Some(pid) = &player_id {
                     eprintln!(

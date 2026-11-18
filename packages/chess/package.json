@@ -1,0 +1,27 @@
+{
+    "name": "antarian-chess",
+    "version": "0.1.0",
+    "description": "Antarian chess engine, bot, and online client for the browser, compiled from Rust to WebAssembly",
+    "files": [
+        "dist"
+    ],
+    "type": "module",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js"
+        }
+    },
+    "scripts": {
+        "generate:protocol": "node scripts/build-protocol.mjs",
+        "build:wasm": "node scripts/build-wasm.mjs",
+        "build": "npm run generate:protocol && npm run build:wasm && tsc -p tsconfig.json",
+        "check": "tsc -p tsconfig.json --noEmit",
+        "test": "node check.mjs && node check-online.mjs"
+    },
+    "devDependencies": {
+        "typescript": "^5.9.3"
+    }
+}
