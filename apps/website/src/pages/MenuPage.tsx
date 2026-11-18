@@ -75,16 +75,17 @@ export function MenuPage() {
             >
               Browse Lobbies
             </Button>
-            <div className="flex gap-2">
+            <div className="flex flex-col md:flex-row gap-2">
+              <Separator className="md:hidden" />
               <Button
-                className="flex-1"
+                className="md:flex-1"
                 disabled={nameEmpty}
                 onClick={() => startOnline("public")}
               >
                 Create Public Lobby
               </Button>
               <Button
-                className="flex-1"
+                className="md:flex-1"
                 disabled={nameEmpty}
                 onClick={() => startOnline("private")}
               >

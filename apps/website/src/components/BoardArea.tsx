@@ -24,7 +24,7 @@ export function BoardArea({
   centipawns,
 }: BoardAreaProps) {
   return (
-    <div className="flex w-full min-w-0 items-stretch gap-2">
+    <div className="flex flex-col md:flex-row w-full min-w-0 items-stretch gap-2">
       <EvalBar centipawns={centipawns} orientation={orientation} />
       <div className="aspect-square min-w-0 flex-1">
         <Board
