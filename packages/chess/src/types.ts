@@ -20,6 +20,8 @@ export interface Move {
     from: Square;
     to: Square;
     capture: boolean;
+    /** Piece chosen when a knight promotes, otherwise `null`. */
+    promotion: PieceKind | null;
 }
 
 export type StatusKind = "ongoing" | "checkmate" | "stalemate";

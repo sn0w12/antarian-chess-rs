@@ -65,14 +65,32 @@ export function capturedPieces(
   }
 
   const missing: PieceKind[] = [];
+  let promoted = 0;
   for (const [kind, total] of Object.entries(STARTING_PIECES) as [
     PieceKind,
     number,
   ][]) {
-    const lost = total - (counts.get(kind) ?? 0);
-    for (let index = 0; index < lost; index += 1) {
+    const present = counts.get(kind) ?? 0;
+    if (present > total) {
+      promoted += present - total;
+    }
+    for (let index = 0; index < total - present; index += 1) {
       missing.push(kind);
     }
+  }
+
+  // A promotion removes one knight and adds one extra piece, so those knights
+  // were not captured.
+  if (promoted > 0) {
+    return missing.filter((kind, index) => {
+      if (kind !== "knight") {
+        return true;
+      }
+      const earlierKnights = missing
+        .slice(0, index)
+        .filter((other) => other === "knight").length;
+      return earlierKnights >= promoted;
+    });
   }
   return missing;
 }

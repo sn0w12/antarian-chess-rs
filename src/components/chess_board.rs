@@ -5,8 +5,8 @@ use chess_server::protocol::ClientMessage;
 use gpui::{
     AnyElement, AppContext, AsyncApp, AvailableSpace, Context, Entity, FocusHandle, Hsla, Image,
     ImageFormat, InteractiveElement, IntoElement, ObjectFit, ParentElement, Pixels, Render,
-    ScrollStrategy, SharedString, Size, StatefulInteractiveElement, Styled, StyledImage, WeakEntity,
-    Window, div, hsla, img, prelude::FluentBuilder, px, relative, size,
+    ScrollStrategy, SharedString, Size, StatefulInteractiveElement, Styled, StyledImage,
+    WeakEntity, Window, div, hsla, img, prelude::FluentBuilder, px, relative, size,
 };
 use gpui_component::{
     ActiveTheme, VirtualListScrollHandle,
@@ -157,6 +157,13 @@ struct DragPiece {
     from: u8,
 }
 
+#[derive(Clone, Copy)]
+struct PendingPromotion {
+    from: u8,
+    to: u8,
+    color: Color,
+}
+
 struct DragPreview {
     image: Arc<Image>,
     size: Pixels,
@@ -179,6 +186,7 @@ pub struct ChessBoard {
     pub player_color: Color,
     selected_square: Option<usize>,
     legal_targets: Vec<u8>,
+    pending_promotion: Option<PendingPromotion>,
 
     history: Vec<HistoryEntry>,
     view_ply: usize,
@@ -225,6 +233,7 @@ impl ChessBoard {
             player_color: Color::White,
             selected_square: None,
             legal_targets: Vec::new(),
+            pending_promotion: None,
             history: vec![HistoryEntry {
                 board: Board::initial(),
                 last_move: None,
@@ -270,6 +279,7 @@ impl ChessBoard {
         self.is_our_turn = color == Color::White;
         self.selected_square = None;
         self.legal_targets.clear();
+        self.pending_promotion = None;
         self.move_count = 0;
         self.captured_us.clear();
         self.captured_opp.clear();
@@ -329,7 +339,8 @@ impl ChessBoard {
         }
     }
 
-    fn begin_drag(&mut self, square: usize) {
+    fn begin_drag(&mut self, square: usize, cx: &mut Context<Self>) {
+        self.cancel_promotion(cx);
         self.dragging_from = Some(square as u8);
         self.select_piece(square);
     }
@@ -344,20 +355,72 @@ impl ChessBoard {
         if color != self.player_color {
             return false;
         }
-        let capture = self.game_state.get(to).is_some();
         self.game_state
             .generate_legal_moves(self.game_state.turn)
-            .contains(&Move::new(from as u8, to as u8, capture))
+            .iter()
+            .any(|mv| mv.from as usize == from && mv.to as usize == to)
     }
 
     fn drop_piece(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
         self.dragging_from = None;
-        if self.is_legal_drop(from, to) {
-            let capture = self.game_state.get(to).is_some();
-            self.exec_move(Move::new(from as u8, to as u8, capture), cx);
+        if self.pending_promotion.is_some() {
+            self.cancel_promotion(cx);
+            return;
+        }
+        if let Some(mv) = self.legal_move(from, to) {
+            if mv.promotion.is_some() {
+                self.begin_promotion(from, to, cx);
+            } else {
+                self.exec_move(mv, cx);
+            }
         } else {
             self.selected_square = None;
             self.legal_targets.clear();
+            cx.notify();
+        }
+    }
+
+    fn legal_move(&self, from: usize, to: usize) -> Option<Move> {
+        self.game_state
+            .generate_legal_moves(self.game_state.turn)
+            .into_iter()
+            .find(|mv| mv.from as usize == from && mv.to as usize == to)
+    }
+
+    fn begin_promotion(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        let Some((color, _)) = self.game_state.get(from) else {
+            return;
+        };
+        self.pending_promotion = Some(PendingPromotion {
+            from: from as u8,
+            to: to as u8,
+            color,
+        });
+        self.selected_square = None;
+        self.legal_targets.clear();
+        cx.notify();
+    }
+
+    fn choose_promotion(&mut self, kind: PieceKind, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_promotion.take() else {
+            return;
+        };
+        if let Some(mv) = self
+            .game_state
+            .generate_legal_moves(self.game_state.turn)
+            .into_iter()
+            .find(|mv| {
+                mv.from == pending.from && mv.to == pending.to && mv.promotion == Some(kind)
+            })
+        {
+            self.exec_move(mv, cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    fn cancel_promotion(&mut self, cx: &mut Context<Self>) {
+        if self.pending_promotion.take().is_some() {
             cx.notify();
         }
     }
@@ -432,14 +495,13 @@ impl ChessBoard {
                         None => break,
                     };
                     let keep_running = app.update(|app| {
-                        entity
-                            .update(app, |this, cx| {
-                                if this.timer_generation != generation {
-                                    return false;
-                                }
-                                this.tick(cx);
-                                true
-                            })
+                        entity.update(app, |this, cx| {
+                            if this.timer_generation != generation {
+                                return false;
+                            }
+                            this.tick(cx);
+                            true
+                        })
                     });
                     if !keep_running {
                         break;
@@ -586,6 +648,10 @@ impl ChessBoard {
     }
 
     pub fn handle_square_click(&mut self, square: usize, cx: &mut Context<Self>) {
+        if self.pending_promotion.is_some() {
+            self.cancel_promotion(cx);
+            return;
+        }
         if !self.can_move_now() {
             return;
         }
@@ -593,9 +659,13 @@ impl ChessBoard {
         if let Some(selected) = self.selected_square
             && self.legal_targets.contains(&(square as u8))
         {
-            let capture = self.game_state.get(square).is_some();
-            let mv = Move::new(selected as u8, square as u8, capture);
-            self.exec_move(mv, cx);
+            if let Some(mv) = self.legal_move(selected, square) {
+                if mv.promotion.is_some() {
+                    self.begin_promotion(selected, square, cx);
+                } else {
+                    self.exec_move(mv, cx);
+                }
+            }
             return;
         }
 
@@ -632,6 +702,7 @@ impl ChessBoard {
                     game_id: gid,
                     from: mv.from,
                     to: mv.to,
+                    promotion: mv.promotion.map(|kind| kind.name().to_string()),
                 };
                 if let Ok(payload) = serde_json::to_string(&msg) {
                     let _ = tx.send(WsCommand::Text(payload));
@@ -917,6 +988,7 @@ fn board_view(this: &ChessBoard, flip: bool, cx: &Context<ChessBoard>) -> AnyEle
     div()
         .h_full()
         .aspect_ratio(1.0)
+        .relative()
         .child(
             div()
                 .size_full()
@@ -1002,7 +1074,7 @@ fn board_view(this: &ChessBoard, flip: bool, cx: &Context<ChessBoard>) -> AnyEle
                             move |_drag, _offset, _window, cx| {
                                 if let Some(this) = drag_weak.upgrade() {
                                     let _ = this.update(cx, |this, cx| {
-                                        this.begin_drag(sq);
+                                        this.begin_drag(sq, cx);
                                         cx.notify();
                                     });
                                 }
@@ -1037,6 +1109,50 @@ fn board_view(this: &ChessBoard, flip: bool, cx: &Context<ChessBoard>) -> AnyEle
                     })
                 })),
         )
+        .child(promotion_overlay(this, flip, cx))
+        .into_any_element()
+}
+
+fn promotion_overlay(this: &ChessBoard, flip: bool, cx: &Context<ChessBoard>) -> AnyElement {
+    let Some(pending) = this.pending_promotion else {
+        return div().into_any_element();
+    };
+    let t = cx.theme();
+    let file = (pending.to % 8) as f32;
+    let rank = (pending.to / 8) as f32;
+    let column = if flip { file } else { 7.0 - file };
+    let row = if flip { 7.0 - rank } else { rank };
+    let rows = PieceKind::PROMOTION_CHOICES.len() as f32;
+    let top = row.min(8.0 - rows);
+
+    let mut choices = v_flex().size_full();
+    for kind in PieceKind::PROMOTION_CHOICES {
+        let weak = cx.weak_entity();
+        choices = choices.child(
+            Button::new(format!("promotion-{kind:?}"))
+                .w_full()
+                .flex_1()
+                .cursor_pointer()
+                .child(img(piece_image(kind, pending.color)).size_full().object_fit(ObjectFit::Contain))
+                .on_click(move |_, _window, cx| {
+                    let _ = weak.update(cx, |this, cx| this.choose_promotion(kind, cx));
+                }),
+        );
+    }
+
+    div()
+        .absolute()
+        .top(relative(top / 8.0))
+        .left(relative(column / 8.0))
+        .w(relative(1.0 / 8.0))
+        .h(relative(rows / 8.0))
+        .overflow_hidden()
+        .rounded_md()
+        .border_1()
+        .border_color(t.border)
+        .bg(t.popover)
+        .shadow_lg()
+        .child(choices)
         .into_any_element()
 }
 
@@ -1252,7 +1368,10 @@ fn rematch_panel(this: &ChessBoard, cx: &Context<ChessBoard>) -> AnyElement {
         RematchState::Available => v_flex()
             .w_full()
             .gap_2()
-            .child(Label::new("Want another game with the same opponent?").text_color(t.muted_foreground))
+            .child(
+                Label::new("Want another game with the same opponent?")
+                    .text_color(t.muted_foreground),
+            )
             .child(
                 Button::new("request-rematch")
                     .w_full()
@@ -1267,7 +1386,10 @@ fn rematch_panel(this: &ChessBoard, cx: &Context<ChessBoard>) -> AnyElement {
         RematchState::Requesting => v_flex()
             .w_full()
             .gap_2()
-            .child(Label::new("Rematch request sent. Waiting for your opponent.").text_color(t.muted_foreground))
+            .child(
+                Label::new("Rematch request sent. Waiting for your opponent.")
+                    .text_color(t.muted_foreground),
+            )
             .into_any_element(),
         RematchState::RequestedByOpponent => {
             let accept_weak = cx.weak_entity();

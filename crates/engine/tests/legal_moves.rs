@@ -75,6 +75,32 @@ fn paladin_jump_discovery_is_not_legal() {
 }
 
 #[test]
+fn knight_promotes_on_the_last_rank() {
+    let mut board = Board::empty();
+    board.set(4, Some((Color::White, PieceKind::Emperor))); // e1
+    board.set(48, Some((Color::White, PieceKind::Knight))); // a7
+    board.set(63, Some((Color::Black, PieceKind::Emperor))); // h8
+    board.turn = Color::White;
+
+    let promotions: Vec<_> = board
+        .generate_legal_moves(Color::White)
+        .into_iter()
+        .filter(|mv| mv.from == 48 && mv.to == 56)
+        .collect();
+    assert_eq!(promotions.len(), PieceKind::PROMOTION_CHOICES.len());
+    for mv in promotions {
+        let kind = mv.promotion.expect("promotion move carries a piece");
+        assert!(PieceKind::PROMOTION_CHOICES.contains(&kind));
+        assert_eq!(board.make_move(&mv).get(56), Some((Color::White, kind)));
+    }
+
+    assert_eq!(
+        board.count_all_moves(Color::White),
+        board.generate_all_moves(Color::White).len() as u32
+    );
+}
+
+#[test]
 fn optimized_legal_generation_matches_brute_force() {
     for seed in [
         0x9E37_79B9_7F4A_7C15,

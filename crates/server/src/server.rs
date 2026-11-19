@@ -55,7 +55,11 @@ struct Game {
 
 impl Game {
     fn turn(&self) -> &'static str {
-        if self.plies % 2 == 0 { "white" } else { "black" }
+        if self.plies % 2 == 0 {
+            "white"
+        } else {
+            "black"
+        }
     }
 
     fn clocks(&self, now: Instant) -> (u64, u64) {
@@ -184,10 +188,13 @@ impl GameServer {
         inner.matchmaking.retain(|p| p != player_id);
 
         // Remove hosted lobby if present
-        let lobby_to_remove = inner.players.get(player_id).and_then(|player| match &player.state {
-            PlayerState::InLobby(code) => Some(code.clone()),
-            _ => None,
-        });
+        let lobby_to_remove = inner
+            .players
+            .get(player_id)
+            .and_then(|player| match &player.state {
+                PlayerState::InLobby(code) => Some(code.clone()),
+                _ => None,
+            });
         if let Some(code) = lobby_to_remove {
             inner.lobbies.remove(&code);
             self.broadcast_public_lobby_list_inner(&inner);
@@ -320,11 +327,7 @@ impl GameServer {
         true
     }
 
-    pub async fn create_lobby(
-        &self,
-        player_id: &str,
-        private_lobby: bool,
-    ) -> Option<LobbyCode> {
+    pub async fn create_lobby(&self, player_id: &str, private_lobby: bool) -> Option<LobbyCode> {
         let mut inner = self.inner.write().await;
 
         let can_create = inner
@@ -614,17 +617,19 @@ impl GameServer {
     // ---- Game actions ----
 
     /// Forward a move from one player to the opponent in the specified game.
-    pub async fn handle_move(&self, player_id: &str, game_id: &str, from: u8, to: u8) {
+    pub async fn handle_move(
+        &self,
+        player_id: &str,
+        game_id: &str,
+        from: u8,
+        to: u8,
+        promotion: Option<String>,
+    ) {
         let mut inner = self.inner.write().await;
         let now = Instant::now();
         let mut timeout_side: Option<&'static str> = None;
-        let mut outgoing: Option<(
-            PlayerId,
-            PlayerId,
-            PlayerId,
-            ServerMessage,
-            ServerMessage,
-        )> = None;
+        let mut outgoing: Option<(PlayerId, PlayerId, PlayerId, ServerMessage, ServerMessage)> =
+            None;
 
         {
             let Some(game) = inner.games.get_mut(game_id) else {
@@ -673,6 +678,7 @@ impl GameServer {
                         game_id: game.id.clone(),
                         from,
                         to,
+                        promotion: promotion.clone(),
                     },
                     clock_message(game, now),
                 ));
@@ -1079,9 +1085,14 @@ pub async fn handle_connection(stream: TcpStream, server: GameServer) {
                 }
             }
 
-            ClientMessage::MakeMove { game_id, from, to } => {
+            ClientMessage::MakeMove {
+                game_id,
+                from,
+                to,
+                promotion,
+            } => {
                 if let Some(pid) = &player_id {
-                    server.handle_move(pid, &game_id, from, to).await;
+                    server.handle_move(pid, &game_id, from, to, promotion).await;
                 }
             }
 

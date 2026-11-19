@@ -32,10 +32,7 @@ pub struct ConfirmDialogOptions {
 }
 
 impl ConfirmDialogOptions {
-    pub fn new(
-        title: impl Into<SharedString>,
-        message: impl Into<SharedString>,
-    ) -> Self {
+    pub fn new(title: impl Into<SharedString>, message: impl Into<SharedString>) -> Self {
         Self {
             title: title.into(),
             message: message.into(),
@@ -44,18 +41,12 @@ impl ConfirmDialogOptions {
         }
     }
 
-    pub fn confirm_label(
-        mut self,
-        label: impl Into<SharedString>,
-    ) -> Self {
+    pub fn confirm_label(mut self, label: impl Into<SharedString>) -> Self {
         self.confirm_label = label.into();
         self
     }
 
-    pub fn cancel_label(
-        mut self,
-        label: impl Into<SharedString>,
-    ) -> Self {
+    pub fn cancel_label(mut self, label: impl Into<SharedString>) -> Self {
         self.cancel_label = label.into();
         self
     }
@@ -109,10 +100,8 @@ impl ChessApp {
         });
     }
 
-    pub fn show_install_prompt(
-        window: &mut Window,
-        cx: &mut App,
-    ) {
+
+    pub fn show_install_prompt(window: &mut Window, cx: &mut App) {
         window.open_dialog(cx, move |dlg: Dialog, _wnd, app: &mut App| {
             dlg.title(div().child("Install Antarian Chess"))
                 .child(
@@ -178,11 +167,7 @@ impl ChessApp {
     }
 
     #[cfg(feature = "auto_update")]
-    pub fn show_update_prompt(
-        window: &mut Window,
-        cx: &mut App,
-        version: Version,
-    ) {
+    pub fn show_update_prompt(window: &mut Window, cx: &mut App, version: Version) {
         window.open_dialog(cx, move |dlg: Dialog, _wnd, app: &mut App| {
             let version_for_install = version.clone();
 

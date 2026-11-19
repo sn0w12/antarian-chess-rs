@@ -31,8 +31,8 @@ function legalMoves(id, from = 255) {
   return readResult(wasm.game_legal_moves(id, from));
 }
 
-function play(id, from, to) {
-  return readResult(wasm.game_play(id, from, to));
+function play(id, from, to, promotion = 0) {
+  return readResult(wasm.game_play(id, from, to, promotion));
 }
 
 const id = wasm.game_create();

@@ -4,6 +4,7 @@ import type {
     EngineOptions,
     GameState,
     Move,
+    PieceKind,
     PlayedBotMove,
     Square,
     SquareInput,
@@ -40,6 +41,15 @@ type UndoResponse =
 type BestMoveResponse =
     | { move: Move; score: number; depth: number; nodes: number }
     | { move: null; error: string };
+
+const PROMOTION_CODES: Record<PieceKind, number> = {
+    empress: 1,
+    priest: 2,
+    paladin: 3,
+    dragon: 4,
+    emperor: 0,
+    knight: 0,
+};
 
 function normalizeDepth(depth: number): number {
     if (!Number.isFinite(depth)) {
@@ -171,13 +181,22 @@ export class Game {
         );
     }
 
-    /** Play a move if it is legal. Returns the applied move, or `null`. */
-    move(from: SquareInput, to: SquareInput): Move | null {
+    /**
+     * Play a move if it is legal. Returns the applied move, or `null`.
+     * Pass `promotion` to choose the piece a knight promotes to; without it the
+     * engine picks the first legal promotion.
+     */
+    move(
+        from: SquareInput,
+        to: SquareInput,
+        promotion?: PieceKind
+    ): Move | null {
         const response = this.engine.decode<PlayResponse>(
             this.engine.wasm.game_play(
                 this.id,
                 parseSquare(from),
-                parseSquare(to)
+                parseSquare(to),
+                promotion ? (PROMOTION_CODES[promotion] ?? 0) : 0
             )
         );
         return response.ok ? response.move : null;

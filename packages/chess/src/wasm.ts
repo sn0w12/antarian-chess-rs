@@ -12,7 +12,12 @@ export interface WasmExports {
     game_load(id: number, pointer: number, length: number): number;
     game_state(id: number): number;
     game_legal_moves(id: number, from: number): number;
-    game_play(id: number, from: number, to: number): number;
+    game_play(
+        id: number,
+        from: number,
+        to: number,
+        promotion: number
+    ): number;
     game_undo(id: number): number;
     game_best_move(id: number, depth: number): number;
     game_play_best(id: number, depth: number): number;

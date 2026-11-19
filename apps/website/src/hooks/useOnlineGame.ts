@@ -4,6 +4,7 @@ import {
   type GameState,
   type OnlineClient,
   type OnlineStatus,
+  type PieceKind,
 } from "antarian-chess";
 import { materialBalance } from "@/lib/engine";
 import { playGameStart, playMove, playMoveResult } from "@/lib/audio";
@@ -28,6 +29,10 @@ export function useOnlineGame() {
   const [viewIndex, setViewIndex] = useState(0);
   const [selected, setSelected] = useState<number | null>(null);
   const [targets, setTargets] = useState<number[]>([]);
+  const [pendingPromotion, setPendingPromotion] = useState<{
+    from: number;
+    to: number;
+  } | null>(null);
   const [chat, setChat] = useState<ChatLine[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
@@ -193,12 +198,23 @@ export function useOnlineGame() {
     (client.color === null || live.turn === client.color);
 
   const play = useCallback(
-    (from: number, to: number) => {
+    (from: number, to: number, promotion?: PieceKind) => {
       const current = activeClient();
       if (!current || !interactive) {
         return false;
       }
-      const move = current.play(from, to);
+      if (!promotion) {
+        const needsPromotion = current
+          .legalMoves(from)
+          .some((move) => move.to === to && move.promotion);
+        if (needsPromotion) {
+          setPendingPromotion({ from, to });
+          setSelected(null);
+          setTargets([]);
+          return true;
+        }
+      }
+      const move = current.play(from, to, promotion);
       if (!move) {
         return false;
       }
@@ -208,6 +224,22 @@ export function useOnlineGame() {
     },
     [activeClient, interactive],
   );
+
+  const choosePromotion = useCallback(
+    (kind: PieceKind) => {
+      if (!pendingPromotion) {
+        return;
+      }
+      const { from, to } = pendingPromotion;
+      setPendingPromotion(null);
+      play(from, to, kind);
+    },
+    [pendingPromotion, play],
+  );
+
+  const cancelPromotion = useCallback(() => {
+    setPendingPromotion(null);
+  }, []);
 
   const select = useCallback(
     (square: number) => {
@@ -295,6 +327,7 @@ export function useOnlineGame() {
     setChat([]);
     setSelected(null);
     setTargets([]);
+    setPendingPromotion(null);
     setRematchSent(false);
     setRematchDeclined(false);
     setInGame(false);
@@ -337,6 +370,9 @@ export function useOnlineGame() {
     targets,
     select,
     play,
+    pendingPromotion,
+    choosePromotion,
+    cancelPromotion,
     interactive,
     chat,
     sendChat,

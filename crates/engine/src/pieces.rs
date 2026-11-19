@@ -1,6 +1,6 @@
 use crate::board::{Board, coord_to_index, index_to_coord};
 use crate::movegen;
-use crate::types::{Color, Move};
+use crate::types::{Color, Move, PieceKind};
 
 // ---------- Emperor ----------
 pub fn generate_emperor_moves(
@@ -122,11 +122,11 @@ pub fn generate_paladin_moves(
                 Some((pc, _)) => pc == color, // own piece – allowed to jump over
             };
             if intermediate_ok {
-                moves.push(Move {
-                    from: from as u8,
-                    to: to_idx as u8,
-                    capture: board.get(to_idx).is_some_and(|(pc, _)| pc != color),
-                });
+                moves.push(Move::new(
+                    from as u8,
+                    to_idx as u8,
+                    board.get(to_idx).is_some_and(|(pc, _)| pc != color),
+                ));
             }
         }
     }
@@ -150,11 +150,7 @@ pub fn generate_dragon_moves(
             match board.get(to_idx) {
                 None => {
                     if !captures_only {
-                        moves.push(Move {
-                            from: from as u8,
-                            to: to_idx as u8,
-                            capture: false,
-                        });
+                        moves.push(Move::new(from as u8, to_idx as u8, false));
                     }
                 }
                 Some((pc, _)) => {
@@ -165,11 +161,7 @@ pub fn generate_dragon_moves(
                         continue;
                     } else {
                         // Enemy piece – capture and stop
-                        moves.push(Move {
-                            from: from as u8,
-                            to: to_idx as u8,
-                            capture: true,
-                        });
+                        moves.push(Move::new(from as u8, to_idx as u8, true));
                     }
                     break;
                 }
@@ -181,6 +173,22 @@ pub fn generate_dragon_moves(
 }
 
 // ---------- Knight (pawn‑like) ----------
+fn push_knight_move(
+    from: usize,
+    to: usize,
+    capture: bool,
+    promotion_rank: i8,
+    moves: &mut Vec<Move>,
+) {
+    if (to / 8) as i8 == promotion_rank {
+        for kind in PieceKind::PROMOTION_CHOICES {
+            moves.push(Move::new_promotion(from as u8, to as u8, capture, kind));
+        }
+    } else {
+        moves.push(Move::new(from as u8, to as u8, capture));
+    }
+}
+
 pub fn generate_knight_moves(
     board: &Board,
     from: usize,
@@ -191,27 +199,20 @@ pub fn generate_knight_moves(
     let (f, r) = index_to_coord(from);
     let forward = if color == Color::White { 1 } else { -1 };
     let start_rank = if color == Color::White { 1 } else { 6 };
+    let promotion_rank = color.promotion_rank();
 
     // one step forward (quiet)
     if !captures_only
         && let Some(idx) = coord_to_index(f, r + forward)
         && board.get(idx).is_none()
     {
-        moves.push(Move {
-            from: from as u8,
-            to: idx as u8,
-            capture: false,
-        });
+        push_knight_move(from, idx, false, promotion_rank, moves);
         // double step from start rank
         if r == start_rank
             && let Some(idx2) = coord_to_index(f, r + 2 * forward)
             && board.get(idx2).is_none()
         {
-            moves.push(Move {
-                from: from as u8,
-                to: idx2 as u8,
-                capture: false,
-            });
+            moves.push(Move::new(from as u8, idx2 as u8, false));
         }
     }
 
@@ -223,11 +224,7 @@ pub fn generate_knight_moves(
             && let Some((pc, _)) = board.get(idx)
             && pc != color
         {
-            moves.push(Move {
-                from: from as u8,
-                to: idx as u8,
-                capture: true,
-            });
+            push_knight_move(from, idx, true, promotion_rank, moves);
         }
     }
 }

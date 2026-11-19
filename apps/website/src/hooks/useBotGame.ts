@@ -5,6 +5,7 @@ import {
   type Color,
   type Game,
   type GameState,
+  type PieceKind,
 } from "antarian-chess";
 import { playGameStart, playMove, playMoveResult } from "@/lib/audio";
 import { botThinkTime, createGame, materialBalance } from "@/lib/engine";
@@ -34,6 +35,10 @@ export function useBotGame({ playerColor }: BotGameOptions) {
   const [viewIndex, setViewIndex] = useState(0);
   const [selected, setSelected] = useState<number | null>(null);
   const [targets, setTargets] = useState<number[]>([]);
+  const [pendingPromotion, setPendingPromotion] = useState<{
+    from: number;
+    to: number;
+  } | null>(null);
   const [thinking, setThinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [clocks, setClocks] = useState({
@@ -123,7 +128,11 @@ export function useBotGame({ playerColor }: BotGameOptions) {
       if (!result || !game) {
         return;
       }
-      const applied = game.move(result.move.from, result.move.to);
+      const applied = game.move(
+        result.move.from,
+        result.move.to,
+        result.move.promotion ?? undefined,
+      );
       if (!applied) {
         setError("Bot returned an illegal move");
         return;
@@ -157,12 +166,23 @@ export function useBotGame({ playerColor }: BotGameOptions) {
     live.turn === playerColor;
 
   const play = useCallback(
-    (from: number, to: number) => {
+    (from: number, to: number, promotion?: PieceKind) => {
       const game = gameRef.current;
       if (!game || !interactive) {
         return false;
       }
-      const move = game.move(from, to);
+      if (!promotion) {
+        const needsPromotion = game
+          .legalMoves(from)
+          .some((move) => move.to === to && move.promotion);
+        if (needsPromotion) {
+          setPendingPromotion({ from, to });
+          setSelected(null);
+          setTargets([]);
+          return true;
+        }
+      }
+      const move = game.move(from, to, promotion);
       if (!move) {
         return false;
       }
@@ -173,6 +193,22 @@ export function useBotGame({ playerColor }: BotGameOptions) {
     },
     [interactive, record],
   );
+
+  const choosePromotion = useCallback(
+    (kind: PieceKind) => {
+      if (!pendingPromotion) {
+        return;
+      }
+      const { from, to } = pendingPromotion;
+      setPendingPromotion(null);
+      play(from, to, kind);
+    },
+    [pendingPromotion, play],
+  );
+
+  const cancelPromotion = useCallback(() => {
+    setPendingPromotion(null);
+  }, []);
 
   const select = useCallback(
     (square: number) => {
@@ -281,6 +317,9 @@ export function useBotGame({ playerColor }: BotGameOptions) {
     targets,
     select,
     play,
+    pendingPromotion,
+    choosePromotion,
+    cancelPromotion,
     thinking,
     clocks,
     flagged,

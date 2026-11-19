@@ -69,6 +69,10 @@ pub enum ClientMessage {
         from: u8,
         /// Destination square (0–63).
         to: u8,
+        /// Piece chosen for a knight promotion ("empress", "priest",
+        /// "paladin", or "dragon"). Omit for non-promotion moves.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        promotion: Option<String>,
     },
     /// Forfeit the active game.
     Resign {
@@ -157,6 +161,9 @@ pub enum ServerMessage {
         from: u8,
         /// Destination square.
         to: u8,
+        /// Piece chosen for a knight promotion, when the move promotes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        promotion: Option<String>,
     },
     /// Remaining time on both clocks.
     GameClock {

@@ -39,7 +39,7 @@ const wasm = instance.exports;
 | `game_load(id, ptr, len)` | Load a 65-byte board string |
 | `game_state(id)` | Squares, turn, status, last move |
 | `game_legal_moves(id, from)` | Legal moves, `from = 255` for all |
-| `game_play(id, from, to)` | Play a move if legal |
+| `game_play(id, from, to, promotion)` | Play a move if legal; promotion is `0` or `1`–`4` |
 | `game_undo(id)` | Take back the last move |
 | `game_best_move(id, depth)` | Search without playing |
 | `game_play_best(id, depth)` | Search and play |

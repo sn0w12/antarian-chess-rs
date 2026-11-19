@@ -31,7 +31,7 @@ import { createGame, formatScore, squareName } from "antarian-chess";
 const game = await createGame({ wasmUrl: "/chess_wasm.wasm" });
 
 game.state(); // squares, turn, status, moveNumber, lastMove
-game.legalMoves("b1"); // [{ from: 1, to: 16, capture: false }, ...]
+game.legalMoves("b1"); // [{ from: 1, to: 16, capture: false, promotion: null }, ...]
 game.legalMoves(); // every legal move
 
 const move = game.move("b1", "c3");
@@ -47,13 +47,18 @@ convert to and from names. Pieces are `{ color: "white" | "black", kind }`
 where `kind` is `emperor`, `empress`, `priest`, `paladin`, `dragon`, or
 `knight`.
 
+Knights act as pawns and promote when they reach the last rank. Pass
+`"empress"`, `"priest"`, `"paladin"`, or `"dragon"` as the third argument to
+`move` (or `play`) to choose the promoted piece. Without a choice the engine
+promotes to an empress.
+
 ### `Game`
 
 | Member              | Description                                                   |
 | ------------------- | ------------------------------------------------------------- |
 | `state()`           | `{ squares, turn, status, moveNumber, lastMove }`             |
 | `legalMoves(from?)` | Legal moves, optionally only from one square                  |
-| `move(from, to)`    | Play a move if legal; returns it or `null`                    |
+| `move(from, to, promotion?)` | Play a move if legal; returns it or `null`           |
 | `undo()`            | Take back the last move; returns the restored state or `null` |
 | `reset()`           | Return to the starting position                               |
 | `load(boardString)` | Load a 65-byte position string                                |

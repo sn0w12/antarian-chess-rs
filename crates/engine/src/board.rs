@@ -184,13 +184,19 @@ impl Board {
         }
         new.occupied &= !(1u64 << to);
 
-        new.squares[to] = piece;
-        if piece.is_some() {
+        let placed = piece.map(|(color, kind)| {
+            let kind = if kind == PieceKind::Knight && (to / 8) as i8 == color.promotion_rank() {
+                mv.promotion
+                    .filter(|kind| PieceKind::PROMOTION_CHOICES.contains(kind))
+                    .unwrap_or(PieceKind::Empress)
+            } else {
+                kind
+            };
+            (color, kind)
+        });
+        new.squares[to] = placed;
+        if let Some((color, kind)) = placed {
             new.occupied |= 1u64 << to;
-        }
-
-        // Add piece to 'to' square in zobrist
-        if let Some((color, kind)) = piece {
             new.zobrist ^= zobrist_piece_square(color, kind, to);
         }
 
@@ -694,13 +700,19 @@ impl Board {
         let (f, r) = index_to_coord(from);
         let forward = if color == Color::White { 1 } else { -1 };
         let start_rank = if color == Color::White { 1 } else { 6 };
+        let promotion_rank = color.promotion_rank();
+        let promotion_count = PieceKind::PROMOTION_CHOICES.len() as u32;
         let mut n = 0;
 
         if !captures_only
             && let Some(one) = coord_to_index(f, r + forward)
             && self.squares[one].is_none()
         {
-            n += 1;
+            n += if (one / 8) as i8 == promotion_rank {
+                promotion_count
+            } else {
+                1
+            };
             if r == start_rank
                 && let Some(two) = coord_to_index(f, r + 2 * forward)
                 && self.squares[two].is_none()
@@ -714,7 +726,11 @@ impl Board {
                 && let Some((pc, _)) = self.squares[to]
                 && pc != color
             {
-                n += 1;
+                n += if (to / 8) as i8 == promotion_rank {
+                    promotion_count
+                } else {
+                    1
+                };
             }
         }
 

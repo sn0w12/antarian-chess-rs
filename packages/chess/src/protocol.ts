@@ -61,7 +61,12 @@ from: number,
 /**
  * Destination square (0–63).
  */
-to: number, } } | { "type": "Resign", "data": { 
+to: number, 
+/**
+ * Piece chosen for a knight promotion ("empress", "priest",
+ * "paladin", or "dragon"). Omit for non-promotion moves.
+ */
+promotion?: string | null, } } | { "type": "Resign", "data": { 
 /**
  * The game to resign from.
  */
@@ -148,7 +153,11 @@ from: number,
 /**
  * Destination square.
  */
-to: number, } } | { "type": "GameClock", "data": { 
+to: number, 
+/**
+ * Piece chosen for a knight promotion, when the move promotes.
+ */
+promotion?: string | null, } } | { "type": "GameClock", "data": { 
 /**
  * The game these clocks belong to.
  */

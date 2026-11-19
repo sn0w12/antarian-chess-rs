@@ -74,6 +74,10 @@ fn lmr_reduction(depth: u32, moves: u32) -> u32 {
     (1 + moves.saturating_sub(2) / 2).min(depth - 1)
 }
 
+fn same_move(a: &Move, b: &Move) -> bool {
+    a.from == b.from && a.to == b.to && a.promotion == b.promotion
+}
+
 fn see_score(mv: &Move, board: &Board) -> i32 {
     let victim = board
         .get(mv.to as usize)
@@ -83,7 +87,10 @@ fn see_score(mv: &Move, board: &Board) -> i32 {
         .get(mv.from as usize)
         .map(|(_, k)| k.value())
         .unwrap_or(0);
-    let see = victim - attacker;
+    let promotion_gain = mv
+        .promotion
+        .map_or(0, |kind| kind.value() - PieceKind::Knight.value());
+    let see = victim + promotion_gain - attacker;
     if see > 0 {
         800_000 + see * 10
     } else if see == 0 {
@@ -389,7 +396,7 @@ impl SearchThread {
                     let prev = self
                         .root_prev
                         .iter()
-                        .find(|(m, _)| m.from == mv.from && m.to == mv.to)
+                        .find(|(m, _)| same_move(m, &mv))
                         .map(|(_, s)| *s)
                         .unwrap_or(-INF);
                     (mv, prev)
@@ -603,7 +610,13 @@ impl SearchThread {
             self.played[ply] = Some(mv);
 
             // ----- Bad capture pruning (shallow, non-checking) -----
-            if !in_check && !gives_check && mv.capture && moves_searched > 0 && depth + ext <= 6 {
+            if !in_check
+                && !gives_check
+                && mv.capture
+                && mv.promotion.is_none()
+                && moves_searched > 0
+                && depth + ext <= 6
+            {
                 let victim = board
                     .get(mv.to as usize)
                     .map(|(_, k)| k.value())
@@ -621,6 +634,7 @@ impl SearchThread {
             if let Some(base) = futility_base
                 && window_is_null
                 && !mv.capture
+                && mv.promotion.is_none()
                 && !gives_check
                 && moves_searched > 0
                 && (base + futility_margin(depth + ext) <= alpha || moves_searched >= lmp_threshold)
@@ -632,7 +646,9 @@ impl SearchThread {
             let mut reduction = 0u32;
             if depth + ext >= 2 && moves_searched >= 2 && !in_check {
                 reduction = lmr_reduction(depth + ext, moves_searched);
-                if mv.capture {
+                if mv.promotion.is_some() {
+                    reduction = 0;
+                } else if mv.capture {
                     reduction = reduction.saturating_sub(1);
                 } else if gives_check || self.is_killer(&mv, ply) {
                     reduction = 0;
@@ -837,7 +853,7 @@ impl SearchThread {
                         .get(mv.from as usize)
                         .map(|(_, k)| k.value())
                         .unwrap_or(0);
-                    if victim_value <= attacker && see(board, &mv) < 0 {
+                    if mv.promotion.is_none() && victim_value <= attacker && see(board, &mv) < 0 {
                         continue;
                     }
                 }
@@ -885,24 +901,24 @@ impl SearchThread {
 
     fn move_score(&self, mv: &Move, board: &Board, ply: usize, hash_move: Option<&Move>) -> i32 {
         // Hash move gets highest priority
-        if hash_move.is_some_and(|hm| hm.from == mv.from && hm.to == mv.to) {
+        if hash_move.is_some_and(|hm| same_move(hm, mv)) {
             return 1_000_000;
         }
 
-        // Captures ordered by a simple SEE approximation:
+        // Captures and promotions ordered by a simple SEE approximation:
         //   winning trades → near hash-move priority
         //   equal trades   → above killers
         //   losing trades  → above history but below killers
-        if mv.capture {
+        if mv.capture || mv.promotion.is_some() {
             return see_score(mv, board);
         }
 
         // Killer moves
         if ply < MAX_PLY {
-            if self.killers[ply][0].is_some_and(|k| k.from == mv.from && k.to == mv.to) {
+            if self.killers[ply][0].is_some_and(|k| same_move(&k, mv)) {
                 return 400_000;
             }
-            if self.killers[ply][1].is_some_and(|k| k.from == mv.from && k.to == mv.to) {
+            if self.killers[ply][1].is_some_and(|k| same_move(&k, mv)) {
                 return 390_000;
             }
         }
@@ -911,8 +927,7 @@ impl SearchThread {
         if ply > 0
             && let Some(prev) = self.played[ply - 1]
             && let Some((_, kind)) = board.get(prev.to as usize)
-            && self.counter[kind.index()][prev.to as usize]
-                .is_some_and(|c| c.from == mv.from && c.to == mv.to)
+            && self.counter[kind.index()][prev.to as usize].is_some_and(|c| same_move(&c, mv))
         {
             return 350_000;
         }
@@ -967,8 +982,8 @@ impl SearchThread {
     }
 
     fn is_killer(&self, mv: &Move, ply: usize) -> bool {
-        self.killers[ply][0].is_some_and(|k| k.from == mv.from && k.to == mv.to)
-            || self.killers[ply][1].is_some_and(|k| k.from == mv.from && k.to == mv.to)
+        self.killers[ply][0].is_some_and(|k| same_move(&k, mv))
+            || self.killers[ply][1].is_some_and(|k| same_move(&k, mv))
     }
 
     fn store_killer(&mut self, mv: Move, ply: usize) {
@@ -977,7 +992,7 @@ impl SearchThread {
         }
 
         // Don't store same move twice
-        if self.killers[ply][0].is_some_and(|k| k.from == mv.from && k.to == mv.to) {
+        if self.killers[ply][0].is_some_and(|k| same_move(&k, &mv)) {
             return;
         }
 

@@ -63,6 +63,26 @@ if (game.move("a1", "h8") !== null) {
     throw new Error("illegal move was accepted");
 }
 
+const promotionSquares = Array(64).fill(".");
+promotionSquares[4] = "E";
+promotionSquares[48] = "N";
+promotionSquares[63] = "e";
+const promotionBoard = `${promotionSquares.join("")}w`;
+game.load(promotionBoard);
+const promotions = game
+    .legalMoves("a7")
+    .filter((move) => move.to === parseSquare("a8"));
+if (promotions.length !== 4) {
+    throw new Error(`expected 4 promotions, got ${promotions.length}`);
+}
+for (const move of promotions) {
+    game.load(promotionBoard);
+    const applied = game.move("a7", "a8", move.promotion);
+    if (!applied || game.pieceAt("a8")?.kind !== move.promotion) {
+        throw new Error(`promotion to ${move.promotion} did not apply`);
+    }
+}
+
 game.destroy();
 console.log("engine ok", {
     reply: reply.move,

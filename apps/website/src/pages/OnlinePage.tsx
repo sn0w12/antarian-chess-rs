@@ -430,8 +430,11 @@ function OnlineGame({
           selected={game.selected}
           targets={game.targets}
           interactive={game.interactive}
+          promotion={game.pendingPromotion}
           onSelect={game.select}
           onMove={game.play}
+          onPromote={game.choosePromotion}
+          onCancelPromotion={game.cancelPromotion}
           centipawns={game.material}
         />
       }

@@ -1,9 +1,20 @@
 import { useRef, useState } from "react";
-import { squareName, type Color, type GameState } from "antarian-chess";
-import { pieceImage } from "@/lib/pieces";
+import {
+  squareName,
+  type Color,
+  type GameState,
+  type PieceKind,
+} from "antarian-chess";
+import { pieceImage, pieceLabel } from "@/lib/pieces";
 import { cn } from "@/lib/utils";
 const LIGHT = "bg-[#e8e0d2]";
 const DARK = "bg-[#a08064]";
+const PROMOTION_CHOICES: PieceKind[] = [
+  "empress",
+  "priest",
+  "paladin",
+  "dragon",
+];
 
 interface BoardProps {
   state: GameState;
@@ -11,8 +22,11 @@ interface BoardProps {
   selected: number | null;
   targets: number[];
   interactive: boolean;
+  promotion: { from: number; to: number } | null;
   onSelect: (square: number) => void;
   onMove: (from: number, to: number) => boolean;
+  onPromote: (kind: PieceKind) => void;
+  onCancelPromotion: () => void;
 }
 
 interface DragState {
@@ -31,8 +45,11 @@ export function Board({
   selected,
   targets,
   interactive,
+  promotion,
   onSelect,
   onMove,
+  onPromote,
+  onCancelPromotion,
 }: BoardProps) {
   const boardRef = useRef<HTMLDivElement | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -45,6 +62,26 @@ export function Board({
     : -1;
 
   const draggedPiece = drag ? (state.squares[drag.from] ?? null) : null;
+
+  const promotionCell = (() => {
+    if (!promotion) {
+      return null;
+    }
+    const file = promotion.to % 8;
+    const rank = Math.floor(promotion.to / 8);
+    return {
+      file,
+      rank,
+      column: orientation === "white" ? file : 7 - file,
+      row: orientation === "white" ? 7 - rank : rank,
+    };
+  })();
+  const promotionColor = promotion
+    ? (state.squares[promotion.from]?.color ?? state.turn)
+    : state.turn;
+  const promotionTop = promotionCell
+    ? Math.min(promotionCell.row, 8 - PROMOTION_CHOICES.length)
+    : 0;
 
   const squareAt = (x: number, y: number): number | null => {
     const node = document
@@ -61,7 +98,7 @@ export function Board({
     <>
       <div
         ref={boardRef}
-        className="grid h-full w-full touch-none grid-cols-8 grid-rows-8 overflow-hidden rounded-xl border border-border/80 shadow-2xl shadow-black/40"
+        className="relative grid h-full w-full touch-none grid-cols-8 grid-rows-8 overflow-hidden rounded-xl border border-border/80 shadow-2xl shadow-black/40"
       >
         {Array.from({ length: 64 }, (_, index) => {
           const square =
@@ -99,12 +136,20 @@ export function Board({
                 interactive ? "cursor-pointer" : "cursor-default",
               )}
               onClick={(event) => {
+                if (promotion) {
+                  onCancelPromotion();
+                  return;
+                }
                 if (event.detail === 0) {
                   onSelect(square);
                 }
               }}
               onPointerDown={(event) => {
                 if (event.pointerType === "mouse" && event.button !== 0) {
+                  return;
+                }
+                if (promotion) {
+                  onCancelPromotion();
                   return;
                 }
                 onSelect(square);
@@ -201,6 +246,47 @@ export function Board({
             </button>
           );
         })}
+
+        {promotionCell && (
+          <div
+            className="absolute z-20 flex flex-col overflow-hidden rounded-md border border-border bg-popover shadow-2xl shadow-black/50"
+            style={{
+              left: `${(promotionCell.column / 8) * 100}%`,
+              top: `${(promotionTop / 8) * 100}%`,
+              width: "12.5%",
+              height: `${(PROMOTION_CHOICES.length / 8) * 100}%`,
+            }}
+          >
+            {PROMOTION_CHOICES.map((kind, index) => {
+              const fromTop = promotionCell.row > 3;
+              const choice = fromTop
+                ? PROMOTION_CHOICES[PROMOTION_CHOICES.length - 1 - index]
+                : kind;
+              if (!choice) {
+                return null;
+              }
+              return (
+                <button
+                  key={choice}
+                  type="button"
+                  aria-label={`Promote to ${pieceLabel(choice)}`}
+                  className="flex flex-1 items-center justify-center p-[6%] transition-colors hover:bg-accent/60 focus-visible:bg-accent/60 focus-visible:outline-none"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onPromote(choice);
+                  }}
+                >
+                  <img
+                    src={pieceImage({ color: promotionColor, kind: choice })}
+                    alt=""
+                    draggable={false}
+                    className="size-full object-contain drop-shadow-[0_2px_2px_rgba(0,0,0,0.35)]"
+                  />
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {drag?.dragging && draggedPiece && (

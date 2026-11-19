@@ -34,14 +34,18 @@ impl Game {
         }
     }
 
-    fn play(&mut self, from: u32, to: u32) -> Option<Move> {
+    fn play(&mut self, from: u32, to: u32, promotion: Option<PieceKind>) -> Option<Move> {
         let from = u8::try_from(from).ok().filter(|square| *square < 64)?;
         let to = u8::try_from(to).ok().filter(|square| *square < 64)?;
         let mv = self
             .board
             .generate_legal_moves(self.board.turn)
             .into_iter()
-            .find(|mv| mv.from == from && mv.to == to)?;
+            .find(|mv| {
+                mv.from == from
+                    && mv.to == to
+                    && promotion.is_none_or(|kind| mv.promotion == Some(kind))
+            })?;
         self.history.push((self.board.clone(), self.last_move));
         self.board = self.board.make_move(&mv);
         self.last_move = Some(mv);
@@ -161,19 +165,23 @@ pub extern "C" fn game_legal_moves(id: u32, from: u32) -> usize {
     })
 }
 
-/// Play a move by coordinates. Returns `{ ok, move, state }` or an error.
+/// Play a move by coordinates. `promotion` is 0 for none or the choice code
+/// (1 empress, 2 priest, 3 paladin, 4 dragon). Returns `{ ok, move, state }`
+/// or an error.
 #[unsafe(no_mangle)]
-pub extern "C" fn game_play(id: u32, from: u32, to: u32) -> usize {
-    with_game(id, |game| match game.play(from, to) {
-        Some(mv) => {
-            let mut out = String::from("{\"ok\":true,\"move\":");
-            push_move(&mut out, &mv);
-            out.push_str(",\"state\":");
-            out.push_str(&state_json(game));
-            out.push('}');
-            out
+pub extern "C" fn game_play(id: u32, from: u32, to: u32, promotion: u32) -> usize {
+    with_game(id, |game| {
+        match game.play(from, to, promotion_from_code(promotion)) {
+            Some(mv) => {
+                let mut out = String::from("{\"ok\":true,\"move\":");
+                push_move(&mut out, &mv);
+                out.push_str(",\"state\":");
+                out.push_str(&state_json(game));
+                out.push('}');
+                out
+            }
+            None => "{\"ok\":false,\"error\":\"illegal move\"}".to_string(),
         }
-        None => "{\"ok\":false,\"error\":\"illegal move\"}".to_string(),
     })
 }
 
@@ -214,8 +222,11 @@ pub extern "C" fn game_best_move(id: u32, depth: u32) -> usize {
 pub extern "C" fn game_play_best(id: u32, depth: u32) -> usize {
     with_game(id, |game| match search(game, depth) {
         Some(result) => {
-            let Some(mv) = game.play(result.best_move.from as u32, result.best_move.to as u32)
-            else {
+            let Some(mv) = game.play(
+                result.best_move.from as u32,
+                result.best_move.to as u32,
+                result.best_move.promotion,
+            ) else {
                 return "{\"ok\":false,\"error\":\"search returned an illegal move\"}".to_string();
             };
             let mut out = String::from("{\"ok\":true,\"move\":");
@@ -241,7 +252,9 @@ pub unsafe extern "C" fn bot_move(pointer: *const u8, len: usize, depth: u32) ->
     let input = unsafe { std::slice::from_raw_parts(pointer, len) };
     match parse_board(input) {
         Some(board) => match SEARCHER.with(|searcher| {
-            searcher.borrow().find_best_move_depth(&board, depth.clamp(1, 30))
+            searcher
+                .borrow()
+                .find_best_move_depth(&board, depth.clamp(1, 30))
         }) {
             Some(result) => {
                 let mut out = String::from("{\"move\":");
@@ -322,9 +335,28 @@ fn push_piece(out: &mut String, color: Color, kind: PieceKind) {
 
 fn push_move(out: &mut String, mv: &Move) {
     out.push_str(&format!(
-        "{{\"from\":{},\"to\":{},\"capture\":{}}}",
+        "{{\"from\":{},\"to\":{},\"capture\":{},\"promotion\":",
         mv.from, mv.to, mv.capture
     ));
+    match mv.promotion {
+        Some(kind) => {
+            out.push('"');
+            out.push_str(kind.name());
+            out.push('"');
+        }
+        None => out.push_str("null"),
+    }
+    out.push('}');
+}
+
+fn promotion_from_code(code: u32) -> Option<PieceKind> {
+    match code {
+        1 => Some(PieceKind::Empress),
+        2 => Some(PieceKind::Priest),
+        3 => Some(PieceKind::Paladin),
+        4 => Some(PieceKind::Dragon),
+        _ => None,
+    }
 }
 
 fn push_status(out: &mut String, board: &Board) {

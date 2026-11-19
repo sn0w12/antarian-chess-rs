@@ -77,20 +77,12 @@ pub fn generate_ray_moves(
         match board[target] {
             None => {
                 if !captures_only {
-                    moves.push(crate::types::Move {
-                        from: sq as u8,
-                        to: target as u8,
-                        capture: false,
-                    });
+                    moves.push(crate::types::Move::new(sq as u8, target as u8, false));
                 }
             }
             Some((pc, _)) => {
                 if pc != color {
-                    moves.push(crate::types::Move {
-                        from: sq as u8,
-                        to: target as u8,
-                        capture: true,
-                    });
+                    moves.push(crate::types::Move::new(sq as u8, target as u8, true));
                 }
                 if !can_jump {
                     return true;
@@ -148,19 +140,11 @@ impl LeaperSet {
             match board[to] {
                 None => {
                     if !captures_only {
-                        moves.push(crate::types::Move {
-                            from: sq as u8,
-                            to: to as u8,
-                            capture: false,
-                        });
+                        moves.push(crate::types::Move::new(sq as u8, to as u8, false));
                     }
                 }
                 Some((pc, _)) if pc != color => {
-                    moves.push(crate::types::Move {
-                        from: sq as u8,
-                        to: to as u8,
-                        capture: true,
-                    });
+                    moves.push(crate::types::Move::new(sq as u8, to as u8, true));
                 }
                 _ => {}
             }

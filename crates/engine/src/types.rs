@@ -18,6 +18,14 @@ impl Color {
             Color::Black => -1,
         }
     }
+
+    /// Rank on which this colour's knights promote.
+    pub fn promotion_rank(self) -> i8 {
+        match self {
+            Color::White => 7,
+            Color::Black => 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +39,14 @@ pub enum PieceKind {
 }
 
 impl PieceKind {
+    /// Pieces a knight may promote to on the last rank.
+    pub const PROMOTION_CHOICES: [PieceKind; 4] = [
+        PieceKind::Empress,
+        PieceKind::Priest,
+        PieceKind::Paladin,
+        PieceKind::Dragon,
+    ];
+
     pub fn value(self) -> i32 {
         match self {
             PieceKind::Emperor => 10_000,
@@ -52,6 +68,41 @@ impl PieceKind {
             PieceKind::Knight => 5,
         }
     }
+
+    pub fn from_index(index: usize) -> Option<PieceKind> {
+        match index {
+            0 => Some(PieceKind::Emperor),
+            1 => Some(PieceKind::Empress),
+            2 => Some(PieceKind::Priest),
+            3 => Some(PieceKind::Paladin),
+            4 => Some(PieceKind::Dragon),
+            5 => Some(PieceKind::Knight),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PieceKind::Emperor => "emperor",
+            PieceKind::Empress => "empress",
+            PieceKind::Priest => "priest",
+            PieceKind::Paladin => "paladin",
+            PieceKind::Dragon => "dragon",
+            PieceKind::Knight => "knight",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<PieceKind> {
+        match name {
+            "emperor" => Some(PieceKind::Emperor),
+            "empress" => Some(PieceKind::Empress),
+            "priest" => Some(PieceKind::Priest),
+            "paladin" => Some(PieceKind::Paladin),
+            "dragon" => Some(PieceKind::Dragon),
+            "knight" => Some(PieceKind::Knight),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +110,7 @@ pub struct Move {
     pub from: u8,
     pub to: u8,
     pub capture: bool,
+    pub promotion: Option<PieceKind>,
 }
 
 /// The result of a game at any given board state.
@@ -77,9 +129,24 @@ impl Move {
         from: 0,
         to: 0,
         capture: false,
+        promotion: None,
     };
 
     pub fn new(from: u8, to: u8, capture: bool) -> Self {
-        Move { from, to, capture }
+        Move {
+            from,
+            to,
+            capture,
+            promotion: None,
+        }
+    }
+
+    pub fn new_promotion(from: u8, to: u8, capture: bool, promotion: PieceKind) -> Self {
+        Move {
+            from,
+            to,
+            capture,
+            promotion: Some(promotion),
+        }
     }
 }

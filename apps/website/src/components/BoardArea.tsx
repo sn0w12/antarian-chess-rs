@@ -1,4 +1,4 @@
-import type { Color, GameState } from "antarian-chess";
+import type { Color, GameState, PieceKind } from "antarian-chess";
 import { Board } from "./Board";
 import { EvalBar } from "./EvalBar";
 
@@ -8,8 +8,11 @@ interface BoardAreaProps {
   selected: number | null;
   targets: number[];
   interactive: boolean;
+  promotion: { from: number; to: number } | null;
   onSelect: (square: number) => void;
   onMove: (from: number, to: number) => boolean;
+  onPromote: (kind: PieceKind) => void;
+  onCancelPromotion: () => void;
   centipawns: number;
 }
 
@@ -19,8 +22,11 @@ export function BoardArea({
   selected,
   targets,
   interactive,
+  promotion,
   onSelect,
   onMove,
+  onPromote,
+  onCancelPromotion,
   centipawns,
 }: BoardAreaProps) {
   return (
@@ -34,8 +40,11 @@ export function BoardArea({
             selected={selected}
             targets={targets}
             interactive={interactive}
+            promotion={promotion}
             onSelect={onSelect}
             onMove={onMove}
+            onPromote={onPromote}
+            onCancelPromotion={onCancelPromotion}
           />
         </div>
       </div>

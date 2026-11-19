@@ -7,7 +7,13 @@ import type {
     LobbySummary,
     ServerMessage,
 } from "./protocol.js";
-import type { Color, EngineOptions, Move, SquareInput } from "./types.js";
+import type {
+    Color,
+    EngineOptions,
+    Move,
+    PieceKind,
+    SquareInput,
+} from "./types.js";
 
 export const PROTOCOL_VERSION = 1;
 export const DEFAULT_SERVER_URL = "wss://chess-server.arathia.net/";
@@ -63,6 +69,16 @@ interface OnlineEvents {
 type Listener<T> = (payload: T) => void;
 
 type JoinedMessage = Extract<ServerMessage, { type: "Joined" }>;
+
+function asPromotion(value: string | null | undefined): PieceKind | undefined {
+    const name = value?.toLowerCase();
+    return name === "empress" ||
+        name === "priest" ||
+        name === "paladin" ||
+        name === "dragon"
+        ? name
+        : undefined;
+}
 
 function randomId(): string {
     const crypto = globalThis.crypto;
@@ -243,20 +259,29 @@ export class OnlineClient {
      * sends it to the server. Returns the applied move, or `null` when it is not
      * your turn or the move is illegal.
      */
-    play(from: SquareInput, to: SquareInput): Move | null {
+    play(
+        from: SquareInput,
+        to: SquareInput,
+        promotion?: PieceKind
+    ): Move | null {
         if (this.status !== "playing" || !this.gameId) {
             return null;
         }
         if (this.color && this.game.state().turn !== this.color) {
             return null;
         }
-        const move = this.game.move(from, to);
+        const move = this.game.move(from, to, promotion);
         if (!move) {
             return null;
         }
         this.send({
             type: "MakeMove",
-            data: { game_id: this.gameId, from: move.from, to: move.to },
+            data: {
+                game_id: this.gameId,
+                from: move.from,
+                to: move.to,
+                promotion: move.promotion,
+            },
         });
         this.emit("change", undefined);
         return move;
@@ -360,7 +385,11 @@ export class OnlineClient {
                 break;
             case "OpponentMove":
                 if (message.data.game_id === this.gameId) {
-                    this.game.move(message.data.from, message.data.to);
+                    this.game.move(
+                        message.data.from,
+                        message.data.to,
+                        asPromotion(message.data.promotion)
+                    );
                 }
                 break;
             case "GameClock":

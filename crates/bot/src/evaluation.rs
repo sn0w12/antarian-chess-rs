@@ -66,18 +66,18 @@ const PST_MG: [[i32; 64]; 6] = [
         5, 5, 0, 0, -5, -5, 0, 0, 5, 5, 0, 0, -5, -5, 0, 0, 5, 5, 0, 0, -5, 5, 10, 10, 10, 10, 10,
         10, 5, 0, 0, 0, 5, 5, 0, 0, 0,
     ],
-    /* Knight — rewarded for advancing and central control.
-    No promotions exist in Antarian Chess, so values simply increase
-    with advancement and favour the centre files. */
+    /* Knight — rewarded for advancing and central control. The seventh
+    rank promotes, so approaching it is worth much more than the material
+    table alone suggests. */
     [
         0, 0, 0, 0, 0, 0, 0, 0, // rank 0  (back rank — never here)
         5, 10, 15, 20, 20, 15, 10, 5, // rank 1  (starting rank — push to advance)
         15, 20, 25, 35, 35, 25, 20, 15, // rank 2
         25, 35, 40, 50, 50, 40, 35, 25, // rank 3
         35, 45, 55, 65, 65, 55, 45, 35, // rank 4  (centre control)
-        40, 50, 60, 70, 70, 60, 50, 40, // rank 5
-        45, 55, 65, 75, 75, 65, 55, 45, // rank 6
-        35, 45, 55, 65, 65, 55, 45, 35, // rank 7  (last rank — still valuable)
+        55, 70, 85, 100, 100, 85, 70, 55, // rank 5
+        130, 150, 170, 190, 190, 170, 150, 130, // rank 6  (one step from promotion)
+        0, 0, 0, 0, 0, 0, 0, 0, // rank 7  (promoted; never holds a knight)
     ],
 ];
 
@@ -124,9 +124,9 @@ const PST_EG: [[i32; 64]; 6] = [
         20, 25, 30, 40, 40, 30, 25, 20, // rank 2
         35, 40, 50, 60, 60, 50, 40, 35, // rank 3
         50, 55, 65, 75, 75, 65, 55, 50, // rank 4
-        60, 65, 75, 85, 85, 75, 65, 60, // rank 5
-        70, 75, 85, 95, 95, 85, 75, 70, // rank 6
-        60, 65, 75, 85, 85, 75, 65, 60, // rank 7
+        80, 95, 110, 125, 125, 110, 95, 80, // rank 5
+        160, 185, 210, 235, 235, 210, 185, 160, // rank 6  (one step from promotion)
+        0, 0, 0, 0, 0, 0, 0, 0, // rank 7  (promoted; never holds a knight)
     ],
 ];
 

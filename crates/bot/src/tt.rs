@@ -1,4 +1,4 @@
-use chess_engine::{Board, Move};
+use chess_engine::{Board, Move, PieceKind};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Zobrist key for the board, using the cached incremental value.
@@ -30,7 +30,7 @@ const SLOT_BITS: usize = 20;
 const SLOT_BITS: usize = 23;
 const SLOT_COUNT: usize = 1 << SLOT_BITS;
 const SCORE_OFFSET: i32 = 1 << 17;
-const SIGNATURE_SHIFT: usize = 21;
+const SIGNATURE_SHIFT: usize = 43;
 const MAX_DEPTH: u32 = 63;
 
 /// Direct-mapped table of packed entries. One atomic per slot, so a probe is a
@@ -58,12 +58,12 @@ impl TranspositionTable {
     }
 
     fn signature(key: u64) -> u64 {
-        (key >> SIGNATURE_SHIFT) & 0x00FF_FFFF
+        (key >> SIGNATURE_SHIFT) & 0x1F_FFFF
     }
 
     pub fn get(&self, key: u64) -> Option<TTEntry> {
         let packed = self.slots[self.slot(key)].load(Ordering::Relaxed);
-        if packed == 0 || (packed >> 40) != Self::signature(key) {
+        if packed == 0 || (packed >> SIGNATURE_SHIFT) != Self::signature(key) {
             return None;
         }
         Some(unpack(packed))
@@ -73,7 +73,7 @@ impl TranspositionTable {
         let slot = &self.slots[self.slot(key)];
         let existing = slot.load(Ordering::Relaxed);
         if existing != 0
-            && (existing >> 40) == Self::signature(key)
+            && (existing >> SIGNATURE_SHIFT) == Self::signature(key)
             && depth_of(existing) > entry.depth
         {
             return;
@@ -98,13 +98,17 @@ fn pack(key: u64, entry: &TTEntry) -> u64 {
     let flag = entry.flag as u64;
     let mv = match entry.best_move {
         Some(mv) => {
-            1 | ((mv.from as u64) << 1) | ((mv.to as u64) << 7) | ((mv.capture as u64) << 13)
+            let promotion = mv.promotion.map_or(0, |kind| kind.index() as u64 + 1);
+            1 | ((mv.from as u64) << 1)
+                | ((mv.to as u64) << 7)
+                | ((mv.capture as u64) << 13)
+                | (promotion << 14)
         }
         None => 0,
     };
     let signature = TranspositionTable::signature(key);
 
-    score | (depth << 18) | (flag << 24) | (mv << 26) | (signature << 40)
+    score | (depth << 18) | (flag << 24) | (mv << 26) | (signature << SIGNATURE_SHIFT)
 }
 
 fn unpack(packed: u64) -> TTEntry {
@@ -115,13 +119,15 @@ fn unpack(packed: u64) -> TTEntry {
         2 => TTFlag::UpperBound,
         _ => TTFlag::Exact,
     };
-    let mv = (packed >> 26) & 0x3FFF;
+    let mv = (packed >> 26) & 0x1FFFF;
     let best_move = if mv & 1 != 0 {
-        Some(Move::new(
-            ((mv >> 1) & 0x3F) as u8,
-            ((mv >> 7) & 0x3F) as u8,
-            (mv >> 13) & 1 != 0,
-        ))
+        let promotion = ((mv >> 14) & 0x7) as usize;
+        Some(Move {
+            from: ((mv >> 1) & 0x3F) as u8,
+            to: ((mv >> 7) & 0x3F) as u8,
+            capture: (mv >> 13) & 1 != 0,
+            promotion: promotion.checked_sub(1).and_then(PieceKind::from_index),
+        })
     } else {
         None
     };

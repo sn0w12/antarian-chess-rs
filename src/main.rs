@@ -2,12 +2,11 @@
 
 mod audio;
 mod components;
-mod theme;
-mod startup;
 mod dialogs;
+mod startup;
+mod theme;
 
-use machine_uid::get as machine_uid;
-use chess_engine::Color;
+use chess_engine::{Color, PieceKind};
 use chess_server::protocol::{ClientInfo, ClientMessage, LobbySummary, ServerMessage};
 use futures_util::{SinkExt, StreamExt};
 use gpui::{
@@ -17,7 +16,7 @@ use gpui::{
     div, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Disableable, Root, Sizable, TitleBar,
+    ActiveTheme, Disableable, Root, Sizable, TitleBar, WindowExt,
     button::Button,
     clipboard::Clipboard,
     h_flex,
@@ -27,13 +26,13 @@ use gpui_component::{
     separator::Separator,
     slider::{Slider, SliderEvent, SliderState},
     v_flex,
-    WindowExt,
 };
 use gpui_component_assets::Assets;
+use machine_uid::get as machine_uid;
 use serde::{Deserialize, Serialize};
-use std::{ops::Range, path::Path};
 use std::path::PathBuf;
 use std::time::Duration;
+use std::{ops::Range, path::Path};
 use tokio::sync::mpsc;
 use tokio::time;
 use tokio_tungstenite::connect_async;
@@ -564,9 +563,22 @@ impl ChessApp {
                 self.view = View::Playing;
                 cx.notify();
             }
-            ServerMessage::OpponentMove { from, to, .. } => {
+            ServerMessage::OpponentMove {
+                from,
+                to,
+                promotion,
+                ..
+            } => {
                 let is_capture = self.board.read(cx).game_state.get(to as usize).is_some();
-                let mv = chess_engine::Move::new(from, to, is_capture);
+                let promotion = promotion
+                    .as_deref()
+                    .and_then(|name| PieceKind::from_name(&name.to_ascii_lowercase()));
+                let mv = chess_engine::Move {
+                    from,
+                    to,
+                    capture: is_capture,
+                    promotion,
+                };
                 self.board.update(cx, |board, cx| {
                     board.apply_opponent_move(mv, cx);
                 });
@@ -655,9 +667,7 @@ impl ChessApp {
                 });
             }
             ServerMessage::GameClock {
-                white_ms,
-                black_ms,
-                ..
+                white_ms, black_ms, ..
             } => {
                 self.board.update(cx, |board, cx| {
                     board.white_time = white_ms as f64 / 1000.0;
@@ -767,7 +777,10 @@ fn menu_view(
                                 .text_color(t.foreground)
                                 .font_family(t.font_family.clone()),
                         )
-                        .child(Label::new("Play local, queue randomly, or host your own match.").text_color(t.muted_foreground)),
+                        .child(
+                            Label::new("Play local, queue randomly, or host your own match.")
+                                .text_color(t.muted_foreground),
+                        ),
                 )
                 .child(
                     v_flex()
@@ -782,15 +795,18 @@ fn menu_view(
                         .gap_2()
                         .child(Label::new("Solo").text_color(t.muted_foreground))
                         .child({
-                            Button::new("bot-btn").large().label("vs Bot").on_click({
-                                let weak = weak.clone();
-                                move |_, _window, cx| {
-                                    let _ = weak.update(cx, |this, cx| {
-                                        this.start_game(GameMode::Bot, Color::White, "Bot", cx);
-                                    });
-                                }
-                            })
-                            .w_full()
+                            Button::new("bot-btn")
+                                .large()
+                                .label("vs Bot")
+                                .on_click({
+                                    let weak = weak.clone();
+                                    move |_, _window, cx| {
+                                        let _ = weak.update(cx, |this, cx| {
+                                            this.start_game(GameMode::Bot, Color::White, "Bot", cx);
+                                        });
+                                    }
+                                })
+                                .w_full()
                         }),
                 )
                 .child(
@@ -836,7 +852,10 @@ fn menu_view(
                                         .disabled(name_empty)
                                         .on_click(move |_, _window, cx| {
                                             let _ = weak.update(cx, |this, cx| {
-                                                this.connect_online(OnlineIntent::CreatePublicLobby, cx);
+                                                this.connect_online(
+                                                    OnlineIntent::CreatePublicLobby,
+                                                    cx,
+                                                );
                                             });
                                         })
                                 })
@@ -848,7 +867,10 @@ fn menu_view(
                                         .disabled(name_empty)
                                         .on_click(move |_, _window, cx| {
                                             let _ = weak.update(cx, |this, cx| {
-                                                this.connect_online(OnlineIntent::CreatePrivateLobby, cx);
+                                                this.connect_online(
+                                                    OnlineIntent::CreatePrivateLobby,
+                                                    cx,
+                                                );
                                             });
                                         })
                                 })
@@ -876,7 +898,9 @@ fn lobby_browser_view(app: &mut ChessApp, cx: &mut Context<ChessApp>) -> gpui::A
                 .rounded_lg()
                 .bg(cx.theme().muted.opacity(0.12))
                 .child(Label::new("Public Lobbies").text_color(cx.theme().foreground))
-                .child(Label::new(app.online_status.clone()).text_color(cx.theme().muted_foreground))
+                .child(
+                    Label::new(app.online_status.clone()).text_color(cx.theme().muted_foreground),
+                )
                 .child(
                     div()
                         .relative()
@@ -927,8 +951,12 @@ fn lobby_browser_view(app: &mut ChessApp, cx: &mut Context<ChessApp>) -> gpui::A
                                 .disabled(private_code_empty)
                                 .on_click(move |_, _window, cx| {
                                     let _ = join_weak.update(cx, |this, cx| {
-                                        let code =
-                                            this.lobby_code_input.read(cx).value().trim().to_string();
+                                        let code = this
+                                            .lobby_code_input
+                                            .read(cx)
+                                            .value()
+                                            .trim()
+                                            .to_string();
                                         this.join_lobby_from_current_session(code, cx);
                                     });
                                 })
